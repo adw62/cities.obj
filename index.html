@@ -379,15 +379,9 @@ function applyMaterial(obj) {
   const opacity = parseFloat(document.getElementById('wire-opacity').value);
   obj.traverse(c => {
     if (!c.isMesh) return;
-    c.material = new THREE.MeshStandardMaterial({
-      color: modelColor,
-      wireframe: isWire,
-      metalness: 0.2,
-      roughness: 0.7,
-      side: THREE.DoubleSide,
-      transparent: isWire,
-      opacity: isWire ? opacity : 1.0,
-    });
+    c.material = isWire
+      ? new THREE.MeshBasicMaterial({ color: modelColor, wireframe: true, transparent: true, opacity })
+      : new THREE.MeshStandardMaterial({ color: modelColor, metalness: 0.2, roughness: 0.7, side: THREE.DoubleSide });
   });
 }
 
