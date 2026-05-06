@@ -9,10 +9,11 @@ Builds a full city from scratch — street grid or Voronoi boulevard network, zo
 ```
 procity/
 ├── main.py            # generator CLI
+├── index.html         # browser-based 3D viewer
 ├── procity/           # generator Python package
-├── output/            # generated .obj and _traffic.json files
-└── render_project/
-    └── index.html     # browser-based 3D viewer
+└── output/
+    ├── manifest.json  # list of .obj files shown in the viewer dropdown
+    └── *.obj / *_traffic.json
 ```
 
 ## Quick start
@@ -34,9 +35,9 @@ The renderer is a single-page Three.js app. It must be served over HTTP — open
 python -m http.server 8000
 ```
 
-Then open `http://localhost:8000/render_project/` in your browser.
+Then open `http://localhost:8000/` in your browser.
 
-The dropdown lists all cities found in `output/`. Newly generated files appear after a page refresh.
+The dropdown is populated from `output/manifest.json`. Add a filename to that list after generating a new model and it will appear on the next page refresh.
 
 ### Viewer modes
 
