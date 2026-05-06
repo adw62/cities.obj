@@ -134,13 +134,8 @@
     <input type="color" id="color-pick" value="#4488cc">
   </div>
   <div class="panel-section">
-    <label>Scale</label>
-    <input type="range" id="scale-slider" min="0.01" max="5" step="0.01" value="1">
-    <span id="scale-val">1.00×</span>
-  </div>
-  <div class="panel-section">
     <label>Rotation Speed</label>
-    <input type="range" id="speed-slider" min="0" max="0.05" step="0.001" value="0.005">
+    <input type="range" id="speed-slider" min="0" max="0.05" step="0.001" value="0.0015">
   </div>
   <div class="panel-section">
     <label>Ambient Light</label>
@@ -152,7 +147,7 @@
   </div>
   <div class="panel-section">
     <label>Traffic</label>
-    <button class="mode-btn" id="btn-cars" style="width:100%;margin-bottom:4px">Cars: OFF</button>
+    <button class="mode-btn active" id="btn-cars" style="width:100%;margin-bottom:4px">Cars: ON</button>
     <label>Car Count</label>
     <input type="range" id="car-count" min="5" max="200" step="5" value="40">
     <span id="car-count-val">40</span>
@@ -213,14 +208,14 @@ let currentObj = null;
 let rainSystem = null;
 let mode = 'orbit';
 let modelColor = new THREE.Color(0x4488cc);
-let rotSpeed = 0.005;
+let rotSpeed = 0.0015;
 let autoScale = 1;
 let modelCenter = new THREE.Vector3();
 let clock = new THREE.Clock();
 const status = document.getElementById('status');
 
 // ── Traffic / Cars ─────────────────────────────────────────
-let carsEnabled = false;
+let carsEnabled = true;
 let trafficData = null;
 let adjacency = {};   // ptKey -> [{segIdx, dir}]  dir: 1=forward, -1=backward
 let carData = [];     // per-car state
@@ -361,7 +356,7 @@ function loadModel(path) {
     autoScale = targetSize / maxDim;
     modelCenter.copy(center);
 
-    const sliderVal = parseFloat(document.getElementById('scale-slider').value);
+    const sliderVal = 1;
     obj.scale.setScalar(autoScale * sliderVal);
     obj.position.copy(modelCenter).multiplyScalar(-(autoScale * sliderVal));
 
@@ -491,14 +486,6 @@ document.getElementById('color-pick').addEventListener('input', e => {
   if (currentObj) applyMaterial(currentObj);
 });
 
-document.getElementById('scale-slider').addEventListener('input', e => {
-  const v = parseFloat(e.target.value);
-  document.getElementById('scale-val').textContent = v.toFixed(2) + '×';
-  if (currentObj) {
-    currentObj.scale.setScalar(autoScale * v);
-    currentObj.position.copy(modelCenter).multiplyScalar(-(autoScale * v));
-  }
-});
 
 document.getElementById('speed-slider').addEventListener('input', e => {
   rotSpeed = parseFloat(e.target.value);
