@@ -23,8 +23,7 @@
       position: fixed;
       top: 0; left: 0; right: 0;
       height: 48px;
-      background: rgba(0,0,0,0.7);
-      backdrop-filter: blur(6px);
+      background: rgba(0,0,0,0.85);
       display: flex;
       align-items: center;
       gap: 12px;
@@ -68,8 +67,7 @@
       position: fixed;
       top: 48px; right: 0;
       width: 200px;
-      background: rgba(0,0,0,0.65);
-      backdrop-filter: blur(6px);
+      background: rgba(0,0,0,0.85);
       border-left: 1px solid #222;
       padding: 12px;
       z-index: 10;
@@ -102,6 +100,22 @@
       background: none;
     }
 
+    #music-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: auto;
+    }
+
+    #music-title {
+      font-size: 11px;
+      color: #666;
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     #status {
       position: fixed;
       bottom: 12px;
@@ -125,6 +139,14 @@
   <button class="mode-btn" data-mode="daynight">Day/Night</button>
   <button class="mode-btn" data-mode="rain">Rain</button>
   <button class="mode-btn" data-mode="wireframe">Wireframe</button>
+
+  <div id="music-controls">
+    <button class="mode-btn" id="music-prev">&#9664;&#9664;</button>
+    <button class="mode-btn" id="music-play">&#9654;</button>
+    <button class="mode-btn" id="music-next">&#9654;&#9654;</button>
+    <span id="music-title">—</span>
+    <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="0.5" style="width:70px;accent-color:#4a8af4;cursor:pointer;">
+  </div>
 </div>
 
 <!-- Side panel -->
@@ -202,6 +224,7 @@ scene.add(fillLight);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
+controls.autoRotate = true;
 
 // ── State ─────────────────────────────────────────────────
 let currentObj = null;
@@ -209,6 +232,7 @@ let rainSystem = null;
 let mode = 'orbit';
 let modelColor = new THREE.Color(0x4488cc);
 let rotSpeed = 0.0015;
+controls.autoRotateSpeed = rotSpeed * 300;
 let autoScale = 1;
 let modelCenter = new THREE.Vector3();
 let clock = new THREE.Clock();
@@ -284,6 +308,7 @@ function spawnCars() {
     const t = Math.random();
     const color = new THREE.Color().setHSL(Math.random(), 0.9, 0.55);
     const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color }));
+    mesh.userData.isCar = true;
     currentObj.add(mesh);
     carData.push({ mesh, segIdx, dir, t });
   }
@@ -378,7 +403,7 @@ function applyMaterial(obj) {
   const isWire = mode === 'wireframe';
   const opacity = parseFloat(document.getElementById('wire-opacity').value);
   obj.traverse(c => {
-    if (!c.isMesh) return;
+    if (!c.isMesh || c.userData.isCar) return;
     c.material = isWire
       ? new THREE.MeshBasicMaterial({ color: modelColor, wireframe: true, transparent: true, opacity })
       : new THREE.MeshStandardMaterial({ color: modelColor, metalness: 0.2, roughness: 0.7, side: THREE.DoubleSide });
@@ -419,11 +444,6 @@ renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
 
   if (currentObj) {
-    if (mode === 'orbit' || mode === 'wireframe') {
-      currentObj.rotation.y += rotSpeed;
-      controls.update();
-    }
-
     if (mode === 'daynight') {
       flyT += 0.008;
       const sunY = Math.sin(flyT);
@@ -434,26 +454,28 @@ renderer.setAnimationLoop(() => {
       scene.background = new THREE.Color(night * 0.04, night * 0.04, night * 0.08 + t * 0.4);
       ambient.intensity = 0.1 + t * 0.9;
       sun.color.setRGB(1, 0.6 + t * 0.4, 0.3 + t * 0.7);
-      controls.update();
     }
 
     if (mode === 'rain') {
       currentObj.rotation.y += rotSpeed * 0.3;
       updateRain();
-      controls.update();
     }
   }
+
+  controls.update();
 
   if (carsEnabled) updateCars(dt);
   renderer.render(scene, camera);
 });
 
 // ── UI events ─────────────────────────────────────────────
-document.querySelectorAll('#topbar .mode-btn').forEach(btn => {
+document.querySelectorAll('#topbar [data-mode]').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('#topbar .mode-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('#topbar [data-mode]').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     mode = btn.dataset.mode;
+
+    controls.autoRotate = (mode === 'orbit' || mode === 'wireframe');
 
     if (mode === 'rain') buildRain();
     else removeRain();
@@ -483,6 +505,7 @@ document.getElementById('color-pick').addEventListener('input', e => {
 
 document.getElementById('speed-slider').addEventListener('input', e => {
   rotSpeed = parseFloat(e.target.value);
+  controls.autoRotateSpeed = rotSpeed * 300;
 });
 
 document.getElementById('ambient-slider').addEventListener('input', e => {
@@ -527,6 +550,46 @@ fetch('output/manifest.json')
     if (files.length) loadModel(`output/${files[0]}`);
   })
   .catch(() => { status.textContent = 'Error: could not load output/manifest.json'; });
+
+// ── Music ─────────────────────────────────────────────────
+const audio = new Audio();
+audio.volume = 0.5;
+let tracks = [];
+let trackIdx = 0;
+
+function playTrack(i) {
+  if (!tracks.length) return;
+  trackIdx = (i + tracks.length) % tracks.length;
+  audio.src = `music/${tracks[trackIdx]}`;
+  audio.play();
+  document.getElementById('music-title').textContent = tracks[trackIdx].replace(/\.[^.]+$/, '');
+  document.getElementById('music-play').textContent = '⏸';
+}
+
+audio.addEventListener('ended', () => playTrack(trackIdx + 1));
+
+document.getElementById('music-play').addEventListener('click', () => {
+  if (!tracks.length) return;
+  if (audio.paused) {
+    if (!audio.src || audio.src === window.location.href) playTrack(0);
+    else audio.play();
+    document.getElementById('music-play').textContent = '⏸';
+  } else {
+    audio.pause();
+    document.getElementById('music-play').textContent = '▶';
+  }
+});
+
+document.getElementById('music-prev').addEventListener('click', () => playTrack(trackIdx - 1));
+document.getElementById('music-next').addEventListener('click', () => playTrack(trackIdx + 1));
+document.getElementById('volume-slider').addEventListener('input', e => { audio.volume = parseFloat(e.target.value); });
+
+fetch('music/manifest.json')
+  .then(r => r.json())
+  .then(files => {
+    tracks = files;
+    files.forEach(f => { const a = new Audio(`music/${f}`); a.preload = 'auto'; });
+  });
 </script>
 </body>
 </html>
