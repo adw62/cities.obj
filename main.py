@@ -1,190 +1,280 @@
-import copy
+"""Procedural city generator → .obj files for 3D printing.
 
-import numpy
-from numpy.random import gumbel
-from random import random
+Usage:
+    python main.py
+    python main.py --seed 7 --output my_city.obj
+    python main.py --dist gumbel --output city_gumbel.obj
+    python main.py --scale 0.0005 --city-size 300
+    python main.py --no-base --max-floors 30
+"""
 
-header = '''
-o Box{}'''
+import argparse
+import math
+import random
 
-vert = '''
-v {}
-v {}
-v {}
-v {}
-v {}
-v {}
-v {}
-v {}'''
+from procity.config import CityConfig
+from procity.layout import generate_lots, boulevard_polygon, generate_voronoi_boulevards
+from procity.buildings import generate_building, lot_boulevard_overlap
+from procity.geometry import base_plate, empty, road_strip
+from procity.export import write_obj, write_traffic_json
+from procity.sampler import Sampler
+from procity.highway import generate_highway
 
-normals = '''
-vn -1.0 0.0 0.0
-vn -1.0 0.0 0.0
-vn 1.0 0.0 0.0
-vn 1.0 -0.0 0.0
-vn 0.0 -1.0 0.0
-vn 0.0 -1.0 0.0
-vn 0.0 1.0 0.0
-vn 0.0 1.0 0.0
-vn 0.0 0.0 -1.0
-vn 0.0 0.0 -1.0
-vn 0.0 0.0 1.0
-vn 0.0 0.0 1.0'''
 
-faces_vert = [1, 2, 3,
-              3, 2, 4,
-              5, 6, 7,
-              5, 7, 8,
-              6, 5, 1,
-              1, 5, 2,
-              8, 7, 3,
-              8, 3, 4,
-              3, 7, 1,
-              1, 7, 6,
-              8, 4, 2,
-              8, 2, 5]
+def parse_args():
+    p = argparse.ArgumentParser(description="Procedural 3D city → OBJ")
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--output", type=str, default="output/city.obj")
+    p.add_argument("--scale", type=float, default=0.001,
+                   help="Multiply all metres by this (default 0.001 = 1:1000, "
+                        "200m city → 200mm print)")
+    p.add_argument("--city-size", type=float, default=400.0,
+                   help="City width and depth in metres (square shorthand)")
+    p.add_argument("--city-width", type=float, default=None,
+                   help="City width (X) in metres; overrides --city-size")
+    p.add_argument("--city-depth", type=float, default=None,
+                   help="City depth (Z) in metres; overrides --city-size")
+    p.add_argument("--max-floors", type=int, default=18)
+    p.add_argument("--no-base", action="store_true",
+                   help="Omit the ground base plate")
+    p.add_argument("--dist", choices=["uniform", "gumbel", "normal"],
+                   default="uniform",
+                   help="Sampling distribution for heights/lot sizes. "
+                        "gumbel = right-skewed (mostly short buildings, rare tall ones). "
+                        "normal = bell curve centred in the range. "
+                        "uniform = equal probability (default).")
+    p.add_argument("--triangle-blocks", action="store_true",
+                   help="Split each city block into 2 triangular lots.")
+    p.add_argument("--diagonal-road", action="store_true",
+                   help="Add a SW→NE diagonal boulevard.")
+    p.add_argument("--voronoi", action="store_true",
+                   help="Use Voronoi cell edges as boulevards.")
+    p.add_argument("--voronoi-sites", type=int, default=None,
+                   help="Number of Voronoi cells (default: 8).")
+    p.add_argument("--highways", type=int, default=1, metavar="N",
+                   help="Number of raised highway splines (default 1, 0 to disable).")
+    p.add_argument("--no-windows", action="store_true",
+                   help="Omit window indentations (faster, smaller file).")
+    p.add_argument("--surface", choices=["flat", "sphere", "hemisphere", "torus"], default="flat",
+                   help="Project city onto a curved surface (default: flat).")
+    p.add_argument("--sphere-radius", type=float, default=None,
+                   help="Sphere radius in metres (default: city_size/2).")
+    p.add_argument("--pole-offset", type=float, default=None,
+                   help="Hemisphere only: degrees from pole to the city centre "
+                        "(default: auto, keeps pole clear of buildings).")
+    p.add_argument("--torus-major", type=float, default=None,
+                   help="Torus major radius in metres (default: city_size*1.5).")
+    p.add_argument("--torus-minor", type=float, default=None,
+                   help="Torus minor radius in metres (default: city_size*0.3).")
+    return p.parse_args()
 
-faces = '''
-f {}//{} {}//{} {}//{} 
-f {}//{} {}//{} {}//{} 
-f {}//{} {}//{} {}//{} 
-f {}//{} {}//{} {}//{} 
-f {}//{} {}//{} {}//{} 
-f {}//{} {}//{} {}//{} 
-f {}//{} {}//{} {}//{} 
-f {}//{} {}//{} {}//{} 
-f {}//{} {}//{} {}//{} 
-f {}//{} {}//{} {}//{} 
-f {}//{} {}//{} {}//{} 
-f {}//{} {}//{} {}//{}'''
-
-clean_box = [[0.0, 0.0, 0.0],
-[0.0, 0.0, 1.0],
-[0.0, 1.0, 0.0],
-[0.0, 1.0, 1.0],
-[1.0, 0.0, 1.0],
-[1.0, 0.0, 0.0],
-[1.0, 1.0, 0.0],
-[1.0, 1.0, 1.0]]
-
-def scale_x(data, s):
-    new_data = []
-    for v in data:
-        if v[0] == 1:
-            v[0] = v[0]*s
-        new_data.append(v)
-    return new_data
-
-def scale_y(data, s):
-    new_data = []
-    for v in data:
-        if v[1] == 1:
-            v[1] = v[1]*s
-        new_data.append(v)
-    return new_data
-
-def scale_z(data, s):
-    new_data = []
-    for v in data:
-        if v[2] == 1:
-            v[2] = v[2]*s
-        new_data.append(v)
-    return new_data
-
-def translate_x(data, trans):
-    new_data = []
-    for v in data:
-        v[0] = v[0]+trans
-        new_data.append(v)
-    return new_data
-
-def translate_y(data, trans):
-    new_data = []
-    for v in data:
-        v[1] = v[1]+trans
-        new_data.append(v)
-    return new_data
-
-def translate_z(data, trans):
-    new_data = []
-    for v in data:
-        v[2] = v[2]+trans
-        new_data.append(v)
-    return new_data
-
-def list_to_str(data):
-    new_data = []
-    for v in data:
-        tmp = [str(x) for x in v]
-        new_data.append(' '.join(tmp))
-    return new_data
-
-def create_faces(cube_idx):
-    data = []
-    count = 1+cube_idx*12
-    for i, v in enumerate(faces_vert):
-        data.append(v+cube_idx*8)
-        data.append(count)
-        if i % 3 == 2:
-            count += 1
-    data = faces.format(*data)
-    return data
-
-def make_box(sca, pos, i):
-    sx = sca[0]
-    sy = sca[1]
-    sz = sca[2]
-    x = pos[0]
-    y = pos[1]
-    z = pos[2]
-    data = copy.deepcopy(clean_box)
-    data = scale_x(data, sx)
-    data = scale_y(data, sy)
-    data = scale_z(data, sz)
-    data = translate_x(data, x)
-    data = translate_y(data, y)
-    data = translate_z(data, z)
-    data = list_to_str(data)
-    ff = create_faces(i)
-    cube = header.format(i) + vert.format(*data) + normals + ff
-    return cube
 
 def main():
+    args = parse_args()
 
-    ### OPTIONS
-    #width of base x-axis in mm
-    base_x = 30
-    #width of base y-axis in mm
-    base_y = 28
-    #factor determining the decrease in size of buildings near edge
-    size_drop_off = 0.8
-    #factor determining the increase in spacing between building near edge
-    spacing_drop_off = 1.1
-    #INT number of buildings to place on x
-    x_num = 10
-    #INT number of buildings to place on y
-    y_num = 10
-    ###
+    _dist_size_scales = {"uniform": 1.0, "gumbel": 1.2, "normal": 1.0}
 
-    base = make_box([base_x, base_y, 1], [0, 0, 0], 0)
-    cubes = []
-    count = 0
-    dec = numpy.linspace(1.2, size_drop_off, x_num*y_num)
-    inc = numpy.linspace(1.0, spacing_drop_off, x_num*y_num)
-    for i in range(0, x_num):
-        for j in range(0, y_num):
-            scales = [dec[count]*(2+gumbel(scale=1)),
-                      dec[count]*(2+gumbel(scale=1)),
-                      dec[count]*(2+gumbel(scale=1))]
-            origin = [inc[count]*i*(2.5+(random()-0.5)), inc[count]*j*(2.5+(random()-0.5)), 0]
-            cube = make_box(scales, origin, count)
-            cubes.append(cube)
-            count += 1
+    city_width = args.city_width or args.city_size
+    city_depth = args.city_depth or args.city_size
 
-    to_write = base + ''.join(cubes)
+    cfg = CityConfig(
+        seed=args.seed,
+        city_width=city_width,
+        city_depth=city_depth,
+        scale=args.scale,
+        max_floors=args.max_floors,
+        add_base=not args.no_base,
+        output=args.output,
+        use_triangle_blocks=args.triangle_blocks,
+        diagonal_road=args.diagonal_road,
+        voronoi_boulevards=args.voronoi,
+        voronoi_sites=args.voronoi_sites or 8,
+        size_scale=_dist_size_scales.get(args.dist, 1.0),
+        num_highways=args.highways,
+        window_min_floors=999 if args.no_windows else 4,
+    )
 
-    with open('./cube.obj', 'w') as f:
-        f.write(to_write)
+    rng = random.Random(cfg.seed)
+    smp = Sampler(rng, args.dist)
 
-if __name__ == '__main__':
+    print(f"Generating city  seed={cfg.seed}  size={cfg.city_width}×{cfg.city_depth}m  dist={args.dist} …")
+
+    # ── Pick 0–3 random downtown centres for height zoning ───────────────────
+    n_centers = rng.randint(0, 3)
+    half_w, half_d = cfg.city_width * 0.4, cfg.city_depth * 0.4
+    downtown_centers = [
+        (rng.uniform(-half_w, half_w), rng.uniform(-half_d, half_d))
+        for _ in range(n_centers)
+    ]
+    print(f"  {n_centers} downtown centre{'s' if n_centers != 1 else ''}" +
+          (f": {[(round(x,1),round(z,1)) for x,z in downtown_centers]}" if n_centers else ""))
+
+    # ── Build boulevard descriptor list: (x1,z1,x2,z2, poly, angle) ─────────
+    boulevards = []
+
+    if cfg.voronoi_boulevards:
+        voronoi_segs, _vcenter = generate_voronoi_boulevards(cfg, rng)
+        for seg in voronoi_segs:
+            bx1, bz1, bx2, bz2 = seg
+            boulevards.append((bx1, bz1, bx2, bz2,
+                               boulevard_polygon(bx1, bz1, bx2, bz2, cfg.street_width),
+                               math.atan2(bz2 - bz1, bx2 - bx1)))
+
+    if cfg.diagonal_road:
+        pitch_x = cfg.block_width + cfg.street_width
+        pitch_z = cfg.block_depth + cfg.street_width
+        n_x = max(1, int(cfg.city_width / pitch_x))
+        n_z = max(1, int(cfg.city_depth / pitch_z))
+        total_w = n_x * pitch_x - cfg.street_width
+        total_d = n_z * pitch_z - cfg.street_width
+        bx1, bz1 = -total_w / 2, -total_d / 2
+        bx2, bz2 = total_w / 2, total_d / 2
+        boulevards.append((bx1, bz1, bx2, bz2,
+                           boulevard_polygon(bx1, bz1, bx2, bz2, cfg.street_width),
+                           math.atan2(bz2 - bz1, bx2 - bx1)))
+
+    # ── Raised highways ───────────────────────────────────────────────────────
+    n_street_blvd = len(boulevards)   # only street-level entries get road_strip geometry
+    highway_objects = []
+    for hi in range(cfg.num_highways):
+        hw_meshes, hw_blvd = generate_highway(cfg, rng)
+        boulevards.extend(hw_blvd)    # used for building clearance only
+        for part_name, part_mesh in hw_meshes:
+            highway_objects.append((f"highway_{hi:02d}_{part_name}", part_mesh))
+
+    lots = generate_lots(cfg, rng, smp, downtown_centers=downtown_centers)
+    print(f"  {len(lots)} lots generated")
+
+    print(f"  {len(boulevards)} boulevard segments  "
+          f"({cfg.num_highways} highway{'s' if cfg.num_highways != 1 else ''})")
+
+    def _nearest_blvd(lot):
+        best_dist, best_angle = float("inf"), 0.0
+        for bx1, bz1, bx2, bz2, _poly, angle in boulevards:
+            dx, dz = bx2 - bx1, bz2 - bz1
+            lsq = dx * dx + dz * dz
+            t = max(0.0, min(1.0, ((lot.cx - bx1) * dx + (lot.cz - bz1) * dz) / lsq))
+            dist = math.hypot(lot.cx - (bx1 + t * dx), lot.cz - (bz1 + t * dz))
+            if dist < best_dist:
+                best_dist, best_angle = dist, angle
+        return best_dist, best_angle
+
+    def _rotate_to(mesh, lot, angle):
+        cx, cz = lot.cx, lot.cz
+        return (mesh.transform(pos=(-cx, 0.0, -cz))
+                    .transform(rot_y=angle)
+                    .transform(pos=(cx, 0.0, cz)))
+
+    def _any_overlap(lot, angle):
+        return any(lot_boulevard_overlap(lot, cfg, poly, angle) > 0.01
+                   for *_, poly, _ in boulevards)
+
+    rotate_threshold = cfg.block_width
+
+    placed = []
+    for i, lot in enumerate(lots):
+        mesh = generate_building(lot, cfg, smp)
+        if not len(mesh.vertices):
+            continue
+        rot_angle = None
+        if boulevards:
+            dist, blvd_angle = _nearest_blvd(lot)
+            if dist < rotate_threshold and rng.random() < 0.70:
+                mesh = _rotate_to(mesh, lot, blvd_angle)
+                rot_angle = blvd_angle
+        placed.append((f"building_{i:04d}", mesh, lot, rot_angle))
+
+    objects = []
+    removed = 0
+    for name, mesh, lot, rot_angle in placed:
+        if boulevards and _any_overlap(lot, rot_angle or 0.0):
+            removed += 1
+            continue
+        objects.append((name, mesh))
+
+    print(f"  {len(objects)} buildings placed" +
+          (f"  ({removed} cleared for boulevards)" if removed else ""))
+
+    for i, (bx1, bz1, bx2, bz2, *_) in enumerate(boulevards[:n_street_blvd]):
+        objects.append((f"boulevard_{i:03d}", road_strip(bx1, bz1, bx2, bz2, cfg.street_width, cfg.road_height)))
+
+    objects.extend(highway_objects)
+
+    if args.surface != "flat":
+        from procity.warp import (sphere_warp, sphere_mesh,
+                                   hemisphere_warp, hemisphere_mesh,
+                                   torus_warp, torus_mesh)
+        from procity.geometry import Mesh as _Mesh
+
+        if args.surface == "sphere":
+            radius = args.sphere_radius or args.city_size / 2
+            print(f"  Sphere warp  radius={radius:.1f} m …")
+            wfn = lambda v: sphere_warp(v, radius)
+            if cfg.add_base:
+                objects.insert(0, ("base_plate", sphere_mesh(radius)))
+        elif args.surface == "hemisphere":
+            radius = args.sphere_radius or args.city_size / 2
+            # Auto offset: city_depth/(2R) puts the near edge at the pole;
+            # add 15° buffer so the pole stays visibly clear.
+            auto_offset = math.degrees(city_depth / (2 * radius)) + 15
+            pole_deg = args.pole_offset if args.pole_offset is not None else auto_offset
+            lat_offset = math.radians(pole_deg)
+            print(f"  Hemisphere warp  radius={radius:.1f} m  pole_offset={pole_deg:.1f}° …")
+            wfn = lambda v: hemisphere_warp(v, radius, lat_offset)
+            if cfg.add_base:
+                objects.insert(0, ("base_plate", hemisphere_mesh(radius)))
+        else:
+            major = args.torus_major or args.city_size * 1.5
+            minor = args.torus_minor or args.city_size * 0.3
+            print(f"  Torus warp  major={major:.1f} m  minor={minor:.1f} m …")
+            wfn = lambda v: torus_warp(v, major, minor)
+            if cfg.add_base:
+                objects.insert(0, ("base_plate", torus_mesh(major, minor)))
+
+        objects = [(n, m if n == "base_plate" else _Mesh(wfn(m.vertices), m.faces))
+                   for n, m in objects]
+    else:
+        if cfg.add_base:
+            bw = cfg.city_width + 2 * cfg.base_margin
+            bd = cfg.city_depth + 2 * cfg.base_margin
+            objects.insert(0, ("base_plate", base_plate(bw, bd, cfg.base_thickness)))
+
+    # ── Traffic JSON (road segments for viewer car simulation) ────────────────
+    traffic_segs = []
+    road_y = cfg.road_height * cfg.scale
+
+    pitch_x = cfg.block_width + cfg.street_width
+    pitch_z = cfg.block_depth + cfg.street_width
+    n_bx = max(1, int(cfg.city_width / pitch_x))
+    n_bz = max(1, int(cfg.city_depth / pitch_z))
+    total_w = n_bx * pitch_x - cfg.street_width
+    total_d = n_bz * pitch_z - cfg.street_width
+    ox, oz = -total_w / 2, -total_d / 2
+
+    s = cfg.scale
+    for bx in range(n_bx - 1):
+        x = (ox + (bx + 1) * pitch_x - cfg.street_width / 2) * s
+        traffic_segs.append({"start": [x, road_y, oz * s], "end": [x, road_y, (oz + total_d) * s], "type": "street"})
+    for bz in range(n_bz - 1):
+        z = (oz + (bz + 1) * pitch_z - cfg.street_width / 2) * s
+        traffic_segs.append({"start": [ox * s, road_y, z], "end": [(ox + total_w) * s, road_y, z], "type": "street"})
+    for bx1, bz1, bx2, bz2, *_ in boulevards[:n_street_blvd]:
+        traffic_segs.append({"start": [bx1 * s, road_y, bz1 * s], "end": [bx2 * s, road_y, bz2 * s], "type": "boulevard"})
+
+    traffic_path = args.output.replace(".obj", "_traffic.json")
+    write_traffic_json(traffic_segs, traffic_path, cfg.street_width * s)
+    print(f"Traffic JSON  → {traffic_path}  ({len(traffic_segs)} segments)")
+
+    print(f"Writing {args.output} …")
+    write_obj(objects, args.output, scale=cfg.scale)
+
+    total_verts = sum(len(m.vertices) for _, m in objects)
+    total_faces = sum(len(m.faces) for _, m in objects)
+    print(f"Done.  {total_verts:,} vertices  {total_faces:,} faces  → {args.output}")
+    print(f"Print size at 1:{int(round(1/cfg.scale))}: "
+          f"{cfg.city_width * cfg.scale * 1000:.0f} × "
+          f"{cfg.city_depth * cfg.scale * 1000:.0f} mm")
+
+
+if __name__ == "__main__":
     main()

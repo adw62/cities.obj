@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>City OBJ Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a12;
+      color: #ccc;
+      font-family: monospace;
+      overflow: hidden;
+    }
+
+    #canvas-container {
+      position: fixed;
+      inset: 0;
+    }
+
+    /* ── Top bar ── */
+    #topbar {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 48px;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(6px);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 16px;
+      z-index: 10;
+      border-bottom: 1px solid #222;
+    }
+
+    #topbar h1 { font-size: 13px; color: #888; white-space: nowrap; }
+
+    #model-select {
+      background: #111;
+      border: 1px solid #333;
+      color: #eee;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      cursor: pointer;
+      flex: 1;
+      max-width: 240px;
+    }
+
+    .mode-btn {
+      background: #111;
+      border: 1px solid #333;
+      color: #aaa;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s, color 0.15s;
+    }
+    .mode-btn:hover { background: #1e1e2e; color: #fff; }
+    .mode-btn.active { background: #2a4a8a; color: #8af; border-color: #4a6aaa; }
+
+    /* ── Side panel ── */
+    #panel {
+      position: fixed;
+      top: 48px; right: 0;
+      width: 200px;
+      background: rgba(0,0,0,0.65);
+      backdrop-filter: blur(6px);
+      border-left: 1px solid #222;
+      padding: 12px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 11px;
+    }
+
+    .panel-section label {
+      display: block;
+      color: #666;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 1px;
+    }
+
+    input[type=range] {
+      width: 100%;
+      accent-color: #4a8af4;
+    }
+
+    input[type=color] {
+      width: 100%;
+      height: 24px;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      background: none;
+    }
+
+    #status {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      font-size: 11px;
+      color: #444;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+<!-- Top bar -->
+<div id="topbar">
+  <h1>City Viewer</h1>
+  <select id="model-select">
+    <option value="../output/city_voronoi_hw3.obj">city_voronoi_hw3 ★</option>
+    <option value="../output/city_big.obj">city_big</option>
+    <option value="../output/city_hemisphere.obj">city_hemisphere</option>
+    <option value="../output/city.obj">city</option>
+    <option value="../output/city_diagonal.obj">city_diagonal</option>
+    <option value="../output/city_gumbel.obj">city_gumbel</option>
+    <option value="../output/city_hw2.obj">city_hw2</option>
+    <option value="../output/city_normal.obj">city_normal</option>
+    <option value="../output/city_nowin.obj">city_nowin</option>
+    <option value="../output/city_ring.obj">city_ring</option>
+    <option value="../output/city_ring_big.obj">city_ring_big</option>
+    <option value="../output/city_ring_big_1.obj">city_ring_big_1</option>
+    <option value="../output/city_sphere.obj">city_sphere</option>
+    <option value="../output/city_test.obj">city_test</option>
+    <option value="../output/city_torus.obj">city_torus</option>
+    <option value="../output/city_torus_full.obj">city_torus_full</option>
+    <option value="../output/city_tri.obj">city_tri</option>
+    <option value="../output/city_uniform.obj">city_uniform</option>
+    <option value="../output/city_voronoi.obj">city_voronoi</option>
+  </select>
+
+  <button class="mode-btn active" data-mode="orbit">Orbit</button>
+  <button class="mode-btn" data-mode="daynight">Day/Night</button>
+  <button class="mode-btn" data-mode="rain">Rain</button>
+  <button class="mode-btn" data-mode="wireframe">Wireframe</button>
+</div>
+
+<!-- Side panel -->
+<div id="panel">
+  <div class="panel-section">
+    <label>Model Color</label>
+    <input type="color" id="color-pick" value="#4488cc">
+  </div>
+  <div class="panel-section">
+    <label>Scale</label>
+    <input type="range" id="scale-slider" min="0.01" max="5" step="0.01" value="1">
+    <span id="scale-val">1.00×</span>
+  </div>
+  <div class="panel-section">
+    <label>Rotation Speed</label>
+    <input type="range" id="speed-slider" min="0" max="0.05" step="0.001" value="0.005">
+  </div>
+  <div class="panel-section">
+    <label>Ambient Light</label>
+    <input type="range" id="ambient-slider" min="0" max="2" step="0.05" value="0.5">
+  </div>
+  <div class="panel-section">
+    <label>Wire Opacity</label>
+    <input type="range" id="wire-opacity" min="0.05" max="1" step="0.05" value="1">
+  </div>
+  <div class="panel-section">
+    <label>Traffic</label>
+    <button class="mode-btn" id="btn-cars" style="width:100%;margin-bottom:4px">Cars: OFF</button>
+    <label>Car Count</label>
+    <input type="range" id="car-count" min="5" max="200" step="5" value="40">
+    <span id="car-count-val">40</span>
+  </div>
+</div>
+
+<div id="status">Loading…</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── Renderer ──────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = false;
+document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+// ── Scene / Camera ────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a12);
+scene.fog = new THREE.Fog(0x0a0a12, 200, 600);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
+camera.position.set(0, 60, 120);
+
+// ── Lights ────────────────────────────────────────────────
+const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(ambient);
+
+const sun = new THREE.DirectionalLight(0xfff4cc, 1.2);
+sun.position.set(100, 150, 80);
+scene.add(sun);
+
+const fillLight = new THREE.DirectionalLight(0x8888ff, 0.3);
+fillLight.position.set(-80, 20, -60);
+scene.add(fillLight);
+
+
+// ── Controls ──────────────────────────────────────────────
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+// ── State ─────────────────────────────────────────────────
+let currentObj = null;
+let rainSystem = null;
+let mode = 'orbit';
+let modelColor = new THREE.Color(0x4488cc);
+let rotSpeed = 0.005;
+let autoScale = 1;
+let modelCenter = new THREE.Vector3();
+let clock = new THREE.Clock();
+const status = document.getElementById('status');
+
+// ── Traffic / Cars ─────────────────────────────────────────
+let carsEnabled = false;
+let trafficData = null;
+let adjacency = {};   // ptKey -> [{segIdx, dir}]  dir: 1=forward, -1=backward
+let carData = [];     // per-car state
+const CAR_SPEED = 0.02; // OBJ units per second
+
+function ptKey(x, z, tol) {
+  return `${Math.round(x / tol)},${Math.round(z / tol)}`;
+}
+
+function loadTrafficJSON(modelPath) {
+  removeCars();
+  trafficData = null;
+  adjacency = {};
+  const jsonPath = modelPath.replace('.obj', '_traffic.json');
+  fetch(jsonPath)
+    .then(r => { if (!r.ok) throw new Error('no traffic json'); return r.json(); })
+    .then(data => {
+      trafficData = data;
+      buildAdjacency(data);
+      if (carsEnabled && currentObj) spawnCars();
+    })
+    .catch(() => {});
+}
+
+function buildAdjacency(data) {
+  adjacency = {};
+  const tol = data.street_width * 0.1;
+  data.segments.forEach((seg, i) => {
+    const sk = ptKey(seg.start[0], seg.start[2], tol);
+    const ek = ptKey(seg.end[0], seg.end[2], tol);
+    if (!adjacency[sk]) adjacency[sk] = [];
+    if (!adjacency[ek]) adjacency[ek] = [];
+    adjacency[sk].push({ segIdx: i, dir: 1 });   // leave start going forward
+    adjacency[ek].push({ segIdx: i, dir: -1 });  // leave end going backward
+  });
+}
+
+function segEndpoint(seg, atEnd) {
+  return atEnd ? seg.end : seg.start;
+}
+
+function nextSegment(curIdx, arrivedAtEnd) {
+  const seg = trafficData.segments[curIdx];
+  const pt = segEndpoint(seg, arrivedAtEnd);
+  const tol = trafficData.street_width * 0.1;
+  const key = ptKey(pt[0], pt[2], tol);
+  const options = (adjacency[key] || []).filter(o => o.segIdx !== curIdx);
+  if (!options.length) return { segIdx: curIdx, dir: arrivedAtEnd ? -1 : 1 }; // U-turn
+  return options[Math.floor(Math.random() * options.length)];
+}
+
+function spawnCars() {
+  removeCars();
+  if (!trafficData || !currentObj) return;
+  const segs = trafficData.segments;
+  if (!segs.length) return;
+
+  const sw = trafficData.street_width;
+  const carLen = sw * 1.2, carW = sw * 0.4, carH = sw * 0.5;
+  const geo = new THREE.BoxGeometry(carW, carH, carLen);
+  const count = parseInt(document.getElementById('car-count').value);
+
+  for (let i = 0; i < count; i++) {
+    const segIdx = Math.floor(Math.random() * segs.length);
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    const t = Math.random();
+    const color = new THREE.Color().setHSL(Math.random(), 0.9, 0.55);
+    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color }));
+    currentObj.add(mesh);
+    carData.push({ mesh, segIdx, dir, t });
+  }
+  updateCarPositions();
+}
+
+function removeCars() {
+  carData.forEach(c => {
+    if (c.mesh.parent) c.mesh.parent.remove(c.mesh);
+    c.mesh.geometry.dispose();
+    c.mesh.material.dispose();
+  });
+  carData = [];
+}
+
+function updateCarPositions() {
+  if (!trafficData) return;
+  carData.forEach(car => {
+    const seg = trafficData.segments[car.segIdx];
+    const s = car.dir === 1 ? seg.start : seg.end;
+    const e = car.dir === 1 ? seg.end : seg.start;
+    const x = s[0] + (e[0] - s[0]) * car.t;
+    const y = s[1] + (e[1] - s[1]) * car.t;
+    const z = s[2] + (e[2] - s[2]) * car.t;
+    car.mesh.position.set(x, y + trafficData.street_width * 0.25, z);
+    const dx = e[0] - s[0], dz = e[2] - s[2];
+    car.mesh.rotation.y = Math.atan2(dx, dz);
+  });
+}
+
+function updateCars(dt) {
+  if (!trafficData) return;
+  carData.forEach(car => {
+    const seg = trafficData.segments[car.segIdx];
+    const s = seg.start, e = seg.end;
+    const segLen = Math.hypot(e[0] - s[0], e[2] - s[2]);
+    const step = segLen > 0 ? (CAR_SPEED * dt) / segLen : 0;
+    car.t += step;
+    if (car.t >= 1) {
+      const arrivedAtEnd = car.dir === 1;
+      const next = nextSegment(car.segIdx, arrivedAtEnd);
+      car.segIdx = next.segIdx;
+      car.dir = next.dir;
+      car.t = 0;
+    }
+  });
+  updateCarPositions();
+}
+
+// ── OBJ Loader ────────────────────────────────────────────
+const loader = new OBJLoader();
+
+function loadModel(path) {
+  status.textContent = `Loading ${path.split('/').pop()}…`;
+
+  if (currentObj) {
+    scene.remove(currentObj);
+    currentObj.traverse(c => { if (c.isMesh) { c.geometry.dispose(); c.material.dispose(); } });
+    currentObj = null;
+  }
+  removeRain();
+
+  loader.load(path, (obj) => {
+    // Auto-center and scale to fit
+    const box = new THREE.Box3().setFromObject(obj);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const targetSize = 80;
+    autoScale = targetSize / maxDim;
+    modelCenter.copy(center);
+
+    const sliderVal = parseFloat(document.getElementById('scale-slider').value);
+    obj.scale.setScalar(autoScale * sliderVal);
+    obj.position.copy(modelCenter).multiplyScalar(-(autoScale * sliderVal));
+
+    applyMaterial(obj);
+    scene.add(obj);
+    currentObj = obj;
+
+    if (mode === 'rain') buildRain();
+    loadTrafficJSON(path);
+
+    status.textContent = `${path.split('/').pop()} — ${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} units`;
+  }, undefined, (err) => {
+    status.textContent = `Error loading: ${path}`;
+    console.error(err);
+  });
+}
+
+function applyMaterial(obj) {
+  const isWire = mode === 'wireframe';
+  const opacity = parseFloat(document.getElementById('wire-opacity').value);
+  obj.traverse(c => {
+    if (!c.isMesh) return;
+    c.material = new THREE.MeshStandardMaterial({
+      color: modelColor,
+      wireframe: isWire,
+      metalness: 0.2,
+      roughness: 0.7,
+      side: THREE.DoubleSide,
+      transparent: isWire,
+      opacity: isWire ? opacity : 1.0,
+    });
+  });
+}
+
+
+// ── Rain ──────────────────────────────────────────────────
+function buildRain() {
+  if (rainSystem) scene.remove(rainSystem);
+  const count = 8000;
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(count * 3);
+  for (let i = 0; i < count * 3; i++) pos[i] = (Math.random() - 0.5) * 250;
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  rainSystem = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x88aaff, size: 0.3, transparent: true, opacity: 0.6 }));
+  scene.add(rainSystem);
+}
+
+function removeRain() {
+  if (rainSystem) { scene.remove(rainSystem); rainSystem = null; }
+}
+
+function updateRain() {
+  if (!rainSystem) return;
+  const pos = rainSystem.geometry.attributes.position;
+  for (let i = 1; i < pos.count * 3; i += 3) {
+    pos.array[i] -= 0.8;
+    if (pos.array[i] < -80) pos.array[i] = 120;
+  }
+  pos.needsUpdate = true;
+}
+
+// ── Animation loop ────────────────────────────────────────
+let flyT = 0;
+
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+
+  if (currentObj) {
+    if (mode === 'orbit' || mode === 'wireframe') {
+      currentObj.rotation.y += rotSpeed;
+      controls.update();
+    }
+
+    if (mode === 'daynight') {
+      flyT += 0.008;
+      const sunY = Math.sin(flyT);
+      sun.position.set(Math.cos(flyT) * 200, sunY * 200, 60);
+      const t = Math.max(0, sunY);
+      const night = 1 - t;
+      renderer.setClearColor(new THREE.Color(night * 0.04, night * 0.04, night * 0.08 + t * 0.4));
+      scene.background = new THREE.Color(night * 0.04, night * 0.04, night * 0.08 + t * 0.4);
+      ambient.intensity = 0.1 + t * 0.9;
+      sun.color.setRGB(1, 0.6 + t * 0.4, 0.3 + t * 0.7);
+      controls.update();
+    }
+
+    if (mode === 'rain') {
+      currentObj.rotation.y += rotSpeed * 0.3;
+      updateRain();
+      controls.update();
+    }
+  }
+
+  if (carsEnabled) updateCars(dt);
+  renderer.render(scene, camera);
+});
+
+// ── UI events ─────────────────────────────────────────────
+document.querySelectorAll('#topbar .mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#topbar .mode-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    mode = btn.dataset.mode;
+
+    if (mode === 'rain') buildRain();
+    else removeRain();
+
+    if (mode === 'daynight') {
+      flyT = 0;
+    } else {
+      scene.background = new THREE.Color(0x0a0a12);
+      renderer.setClearColor(0x0a0a12);
+      ambient.intensity = parseFloat(document.getElementById('ambient-slider').value);
+      sun.color.set(0xfff4cc);
+    }
+
+    if (currentObj) applyMaterial(currentObj);
+  });
+});
+
+document.getElementById('model-select').addEventListener('change', e => {
+  loadModel(e.target.value);
+});
+
+document.getElementById('color-pick').addEventListener('input', e => {
+  modelColor = new THREE.Color(e.target.value);
+  if (currentObj) applyMaterial(currentObj);
+});
+
+document.getElementById('scale-slider').addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  document.getElementById('scale-val').textContent = v.toFixed(2) + '×';
+  if (currentObj) {
+    currentObj.scale.setScalar(autoScale * v);
+    currentObj.position.copy(modelCenter).multiplyScalar(-(autoScale * v));
+  }
+});
+
+document.getElementById('speed-slider').addEventListener('input', e => {
+  rotSpeed = parseFloat(e.target.value);
+});
+
+document.getElementById('ambient-slider').addEventListener('input', e => {
+  ambient.intensity = parseFloat(e.target.value);
+});
+
+document.getElementById('wire-opacity').addEventListener('input', e => {
+  if (currentObj && mode === 'wireframe') applyMaterial(currentObj);
+});
+
+
+document.getElementById('btn-cars').addEventListener('click', () => {
+  carsEnabled = !carsEnabled;
+  document.getElementById('btn-cars').textContent = `Cars: ${carsEnabled ? 'ON' : 'OFF'}`;
+  document.getElementById('btn-cars').classList.toggle('active', carsEnabled);
+  if (carsEnabled) spawnCars();
+  else removeCars();
+});
+
+document.getElementById('car-count').addEventListener('input', e => {
+  document.getElementById('car-count-val').textContent = e.target.value;
+  if (carsEnabled) spawnCars();
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ── Initial load ──────────────────────────────────────────
+loadModel('../output/city_voronoi_hw3.obj');
+</script>
+</body>
+</html>
