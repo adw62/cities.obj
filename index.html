@@ -124,11 +124,168 @@
       color: #444;
       z-index: 10;
     }
+
+    #gen-panel {
+      position: fixed;
+      top: 48px; left: 0;
+      width: 200px;
+      background: rgba(0,0,0,0.85);
+      border-right: 1px solid #222;
+      padding: 12px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 11px;
+    }
+
+    #gen-panel label {
+      display: block;
+      color: #666;
+      margin-bottom: 3px;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 1px;
+    }
+
+    #gen-panel input[type=number],
+    #gen-panel select {
+      width: 100%;
+      background: #111;
+      border: 1px solid #333;
+      color: #eee;
+      padding: 3px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 11px;
+    }
+
+    #gen-panel input[type=range] { width: 100%; accent-color: #4a8af4; }
+    #gen-panel input[type=checkbox] { accent-color: #4a8af4; }
+
+    #btn-generate {
+      background: #2a4a8a;
+      border: 1px solid #4a6aaa;
+      color: #8af;
+      padding: 7px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      cursor: pointer;
+      width: 100%;
+    }
+    #btn-generate:hover { background: #3a5aaa; }
+    #btn-generate:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #btn-download {
+      background: #1a3a1a;
+      border: 1px solid #3a6a3a;
+      color: #6f6;
+      padding: 5px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 11px;
+      cursor: pointer;
+      width: 100%;
+      display: none;
+    }
+    #btn-download:hover { background: #2a4a2a; }
+
+    #gen-status { color: #666; font-size: 10px; min-height: 14px; }
   </style>
 </head>
 <body>
 
 <div id="canvas-container"></div>
+
+<!-- Generator panel -->
+<div id="gen-panel">
+  <div style="color:#aaa;font-size:12px;font-weight:bold;">Generate City</div>
+
+  <div class="panel-section">
+    <label>Seed</label>
+    <input type="number" id="gen-seed" value="7" min="0" max="999999">
+  </div>
+
+  <div class="panel-section">
+    <label>Width (m) <span id="gen-width-val">400</span></label>
+    <input type="range" id="gen-width" min="100" max="1200" step="50" value="400">
+  </div>
+  <div class="panel-section">
+    <label>Depth (m) <span id="gen-depth-val">400</span></label>
+    <input type="range" id="gen-depth" min="100" max="1200" step="50" value="400">
+  </div>
+
+  <div class="panel-section">
+    <label>Block Size (m) <span id="gen-block-val">40</span></label>
+    <input type="range" id="gen-block" min="20" max="120" step="5" value="40">
+  </div>
+  <div class="panel-section">
+    <label>Street Width (m) <span id="gen-street-val">8</span></label>
+    <input type="range" id="gen-street" min="4" max="24" step="1" value="8">
+  </div>
+
+  <div class="panel-section">
+    <label>Max Floors <span id="gen-floors-val">18</span></label>
+    <input type="range" id="gen-floors" min="2" max="60" step="1" value="18">
+  </div>
+
+  <div class="panel-section">
+    <label>Distribution</label>
+    <select id="gen-dist">
+      <option value="gumbel">Gumbel (skewed)</option>
+      <option value="uniform">Uniform</option>
+      <option value="normal">Normal</option>
+    </select>
+  </div>
+
+  <div class="panel-section">
+    <label>Highways <span id="gen-hw-val">1</span></label>
+    <input type="range" id="gen-hw" min="0" max="4" step="1" value="1">
+  </div>
+
+  <div class="panel-section" id="gen-vsites-row" style="display:none;">
+    <label>Voronoi Sites <span id="gen-vsites-val">8</span></label>
+    <input type="range" id="gen-vsites" min="3" max="24" step="1" value="8">
+  </div>
+
+  <div class="panel-section">
+    <label>Surface</label>
+    <select id="gen-surface">
+      <option value="flat">Flat</option>
+      <option value="sphere">Sphere</option>
+      <option value="hemisphere">Hemisphere</option>
+      <option value="torus">Torus</option>
+    </select>
+  </div>
+  <div id="gen-sphere-row" class="panel-section" style="display:none;">
+    <label>Radius (m) <span id="gen-sradius-val">200</span></label>
+    <input type="range" id="gen-sradius" min="50" max="600" step="10" value="200">
+  </div>
+  <div id="gen-torus-major-row" class="panel-section" style="display:none;">
+    <label>Major Radius (m) <span id="gen-tmajor-val">600</span></label>
+    <input type="range" id="gen-tmajor" min="100" max="1200" step="50" value="600">
+  </div>
+  <div id="gen-torus-minor-row" class="panel-section" style="display:none;">
+    <label>Minor Radius (m) <span id="gen-tminor-val">120</span></label>
+    <input type="range" id="gen-tminor" min="30" max="400" step="10" value="120">
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:5px;margin-top:2px;">
+    <label style="display:flex;gap:8px;align-items:center;text-transform:none;color:#aaa;font-size:11px;">
+      <input type="checkbox" id="gen-voronoi"> Voronoi boulevards</label>
+    <label style="display:flex;gap:8px;align-items:center;text-transform:none;color:#aaa;font-size:11px;">
+      <input type="checkbox" id="gen-diagonal"> Diagonal road</label>
+    <label style="display:flex;gap:8px;align-items:center;text-transform:none;color:#aaa;font-size:11px;">
+      <input type="checkbox" id="gen-windows" checked> Windows</label>
+    <label style="display:flex;gap:8px;align-items:center;text-transform:none;color:#aaa;font-size:11px;">
+      <input type="checkbox" id="gen-base" checked> Base plate</label>
+  </div>
+
+  <button id="btn-generate">Generate</button>
+  <button id="btn-download">Download OBJ</button>
+  <div id="gen-status"></div>
+</div>
 
 <!-- Top bar -->
 <div id="topbar">
@@ -244,9 +401,13 @@ let trafficData = null;
 let adjacency = {};   // ptKey -> [{segIdx, dir}]  dir: 1=forward, -1=backward
 let carData = [];     // per-car state
 const CAR_SPEED = 0.02; // OBJ units per second
+// pre-allocated temporaries to avoid per-frame GC pressure
+const _carFwd = new THREE.Vector3(), _carNorm = new THREE.Vector3(),
+      _carRight = new THREE.Vector3(), _carUp = new THREE.Vector3(),
+      _carM4 = new THREE.Matrix4();
 
-function ptKey(x, z, tol) {
-  return `${Math.round(x / tol)},${Math.round(z / tol)}`;
+function ptKey(x, y, z, tol) {
+  return `${Math.round(x/tol)},${Math.round(y/tol)},${Math.round(z/tol)}`;
 }
 
 function loadTrafficJSON(modelPath) {
@@ -268,8 +429,8 @@ function buildAdjacency(data) {
   adjacency = {};
   const tol = data.street_width * 0.1;
   data.segments.forEach((seg, i) => {
-    const sk = ptKey(seg.start[0], seg.start[2], tol);
-    const ek = ptKey(seg.end[0], seg.end[2], tol);
+    const sk = ptKey(seg.start[0], seg.start[1], seg.start[2], tol);
+    const ek = ptKey(seg.end[0], seg.end[1], seg.end[2], tol);
     if (!adjacency[sk]) adjacency[sk] = [];
     if (!adjacency[ek]) adjacency[ek] = [];
     adjacency[sk].push({ segIdx: i, dir: 1 });   // leave start going forward
@@ -285,7 +446,7 @@ function nextSegment(curIdx, arrivedAtEnd) {
   const seg = trafficData.segments[curIdx];
   const pt = segEndpoint(seg, arrivedAtEnd);
   const tol = trafficData.street_width * 0.1;
-  const key = ptKey(pt[0], pt[2], tol);
+  const key = ptKey(pt[0], pt[1], pt[2], tol);
   const options = (adjacency[key] || []).filter(o => o.segIdx !== curIdx);
   if (!options.length) return { segIdx: curIdx, dir: arrivedAtEnd ? -1 : 1 }; // U-turn
   return options[Math.floor(Math.random() * options.length)];
@@ -326,6 +487,8 @@ function removeCars() {
 
 function updateCarPositions() {
   if (!trafficData) return;
+  const surf = trafficData.surface || 'flat';
+  const lift = trafficData.street_width * 0.25;
   carData.forEach(car => {
     const seg = trafficData.segments[car.segIdx];
     const s = car.dir === 1 ? seg.start : seg.end;
@@ -333,9 +496,34 @@ function updateCarPositions() {
     const x = s[0] + (e[0] - s[0]) * car.t;
     const y = s[1] + (e[1] - s[1]) * car.t;
     const z = s[2] + (e[2] - s[2]) * car.t;
-    car.mesh.position.set(x, y + trafficData.street_width * 0.25, z);
-    const dx = e[0] - s[0], dz = e[2] - s[2];
-    car.mesh.rotation.y = Math.atan2(dx, dz);
+    const dx = e[0] - s[0], dy = e[1] - s[1], dz = e[2] - s[2];
+
+    if (surf !== 'flat' && (dx || dy || dz)) {
+      // surface normal at this point
+      if (surf === 'sphere' || surf === 'hemisphere') {
+        _carNorm.set(x, y, z).normalize();
+      } else { // torus
+        const major = trafficData.torus_major_sc || 0;
+        const xzl = Math.hypot(x, z) || 1e-9;
+        _carNorm.set(x - x/xzl*major, y, z - z/xzl*major).normalize();
+      }
+      // lift along surface normal
+      car.mesh.position.set(
+        x + _carNorm.x * lift,
+        y + _carNorm.y * lift,
+        z + _carNorm.z * lift
+      );
+      // orient: Z=forward along road, Y=surface normal, X=right
+      // right-handed basis requires: right = norm × fwd, up = fwd × right
+      _carFwd.set(dx, dy, dz).normalize();
+      _carRight.crossVectors(_carNorm, _carFwd).normalize();
+      _carUp.crossVectors(_carFwd, _carRight);
+      _carM4.makeBasis(_carRight, _carUp, _carFwd);
+      car.mesh.quaternion.setFromRotationMatrix(_carM4);
+    } else {
+      car.mesh.position.set(x, y + lift, z);
+      car.mesh.rotation.set(0, Math.atan2(dx, dz), 0);
+    }
   });
 }
 
@@ -344,7 +532,7 @@ function updateCars(dt) {
   carData.forEach(car => {
     const seg = trafficData.segments[car.segIdx];
     const s = seg.start, e = seg.end;
-    const segLen = Math.hypot(e[0] - s[0], e[2] - s[2]);
+    const segLen = Math.hypot(e[0]-s[0], e[1]-s[1], e[2]-s[2]);
     const step = segLen > 0 ? (CAR_SPEED * dt) / segLen : 0;
     car.t += step;
     if (car.t >= 1) {
@@ -590,6 +778,150 @@ fetch('music/manifest.json')
     tracks = files;
     files.forEach(f => { const a = new Audio(`music/${f}`); a.preload = 'auto'; });
   });
+
+// ── Generator ─────────────────────────────────────────────
+let genWorker = null;
+let lastObjText = null;
+
+const genSliders = [
+  ['gen-width',   'gen-width-val'],
+  ['gen-depth',   'gen-depth-val'],
+  ['gen-block',   'gen-block-val'],
+  ['gen-street',  'gen-street-val'],
+  ['gen-floors',  'gen-floors-val'],
+  ['gen-hw',      'gen-hw-val'],
+  ['gen-vsites',  'gen-vsites-val'],
+  ['gen-sradius', 'gen-sradius-val'],
+  ['gen-tmajor',  'gen-tmajor-val'],
+  ['gen-tminor',  'gen-tminor-val'],
+];
+genSliders.forEach(([id, valId]) => {
+  document.getElementById(id).addEventListener('input', e => {
+    document.getElementById(valId).textContent = e.target.value;
+  });
+});
+
+document.getElementById('gen-voronoi').addEventListener('change', e => {
+  document.getElementById('gen-vsites-row').style.display = e.target.checked ? 'block' : 'none';
+});
+
+document.getElementById('gen-surface').addEventListener('change', e => {
+  const s = e.target.value;
+  document.getElementById('gen-sphere-row').style.display     = (s === 'sphere' || s === 'hemisphere') ? 'block' : 'none';
+  document.getElementById('gen-torus-major-row').style.display = s === 'torus' ? 'block' : 'none';
+  document.getElementById('gen-torus-minor-row').style.display = s === 'torus' ? 'block' : 'none';
+});
+
+document.getElementById('btn-generate').addEventListener('click', () => {
+  if (genWorker) genWorker.terminate();
+  genWorker = new Worker('./generator.js?v=' + Date.now(), { type: 'module' });
+
+  const btn = document.getElementById('btn-generate');
+  const genStatus = document.getElementById('gen-status');
+  btn.disabled = true;
+  btn.textContent = 'Generating…';
+  genStatus.textContent = 'Building city…';
+  document.getElementById('btn-download').style.display = 'none';
+
+  const config = {
+    seed:              parseInt(document.getElementById('gen-seed').value),
+    city_width:        parseInt(document.getElementById('gen-width').value),
+    city_depth:        parseInt(document.getElementById('gen-depth').value),
+    block_width:       parseInt(document.getElementById('gen-block').value),
+    block_depth:       parseInt(document.getElementById('gen-block').value),
+    street_width:      parseInt(document.getElementById('gen-street').value),
+    max_floors:        parseInt(document.getElementById('gen-floors').value),
+    dist:              document.getElementById('gen-dist').value,
+    num_highways:      parseInt(document.getElementById('gen-hw').value),
+    voronoi_boulevards:document.getElementById('gen-voronoi').checked,
+    voronoi_sites:     parseInt(document.getElementById('gen-vsites').value),
+    diagonal_road:     document.getElementById('gen-diagonal').checked,
+
+    window_min_floors: document.getElementById('gen-windows').checked ? 4 : 999,
+    add_base:          document.getElementById('gen-base').checked,
+    surface:           document.getElementById('gen-surface').value,
+    sphere_radius:     parseInt(document.getElementById('gen-sradius').value),
+    torus_major:       parseInt(document.getElementById('gen-tmajor').value),
+    torus_minor:       parseInt(document.getElementById('gen-tminor').value),
+  };
+
+  genWorker.onmessage = e => {
+    btn.disabled = false;
+    btn.textContent = 'Generate';
+    if (!e.data.ok) {
+      genStatus.textContent = 'Error: ' + e.data.error;
+      console.error(e.data.error);
+      return;
+    }
+
+    const { objects, surface: genSurface, traffic } = e.data;
+    genStatus.textContent = `${genSurface ?? 'flat'} — ${objects.length} objects`;
+
+    // Build Three.js group from typed arrays
+    if (currentObj) {
+      removeCars();
+      scene.remove(currentObj);
+      currentObj.traverse(c => { if (c.isMesh) { c.geometry.dispose(); c.material.dispose(); } });
+    }
+
+    const group = new THREE.Group();
+    for (const { verts, faces } of objects) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+      geo.setIndex(new THREE.BufferAttribute(faces, 1));
+      const flat = geo.toNonIndexed();
+      flat.computeVertexNormals();
+      const mat = new THREE.MeshStandardMaterial({ color: modelColor, metalness: 0.2, roughness: 0.7, side: THREE.DoubleSide });
+      group.add(new THREE.Mesh(flat, mat));
+    }
+
+    // Auto-centre and scale
+    const box3 = new THREE.Box3().setFromObject(group);
+    const size3 = box3.getSize(new THREE.Vector3());
+    const center3 = box3.getCenter(new THREE.Vector3());
+    autoScale = 80 / Math.max(size3.x, size3.y, size3.z);
+    modelCenter.copy(center3);
+    group.scale.setScalar(autoScale);
+    group.position.copy(center3).multiplyScalar(-autoScale);
+
+    scene.add(group);
+    currentObj = group;
+    trafficData = null; adjacency = {};
+    buildAdjacency(traffic); trafficData = traffic;
+    if (carsEnabled) spawnCars();
+    status.textContent = `Generated — ${objects.length} objects`;
+
+    // Build OBJ for download
+    lastObjText = buildObjText(objects, config.seed);
+    document.getElementById('btn-download').style.display = 'block';
+  };
+
+  genWorker.postMessage(config);
+});
+
+document.getElementById('btn-download').addEventListener('click', () => {
+  if (!lastObjText) return;
+  const blob = new Blob([lastObjText], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `city_seed${document.getElementById('gen-seed').value}.obj`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+function buildObjText(objects, seed) {
+  const lines = [`# Generated by procity (seed ${seed})`];
+  let offset = 1;
+  for (const { name, verts, faces } of objects) {
+    lines.push(`o ${name}`);
+    for (let i = 0; i < verts.length; i += 3)
+      lines.push(`v ${verts[i].toFixed(6)} ${verts[i+1].toFixed(6)} ${verts[i+2].toFixed(6)}`);
+    for (let i = 0; i < faces.length; i += 3)
+      lines.push(`f ${faces[i]+offset} ${faces[i+1]+offset} ${faces[i+2]+offset}`);
+    offset += verts.length / 3;
+  }
+  return lines.join('\n');
+}
 </script>
 </body>
 </html>
