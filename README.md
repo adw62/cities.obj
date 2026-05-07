@@ -10,7 +10,9 @@ Builds a full city from scratch — street grid or Voronoi boulevard network, zo
 procity/
 ├── main.py            # generator CLI
 ├── index.html         # browser-based 3D viewer
+├── generator.js       # in-browser generator (Web Worker)
 ├── procity/           # generator Python package
+├── music/             # background music (MP3 + manifest.json)
 └── output/
     ├── manifest.json  # list of .obj files shown in the viewer dropdown
     └── *.obj / *_traffic.json
@@ -48,9 +50,26 @@ The dropdown is populated from `output/manifest.json`. Add a filename to that li
 | **Rain** | Particle rain effect with slow city rotation |
 | **Wireframe** | Transparent mesh with adjustable edge opacity |
 
+### Right panel controls
+
+| Control | Description |
+|---------|-------------|
+| **Base Color** | Color of the ground base plate |
+| **Building Color** | Color of all buildings |
+| **Road Color** | Color of boulevards and highways |
+| **Depth Fog** | Toggle exponential distance fog; density slider controls falloff |
+| **Rotation Speed** | Auto-rotation speed |
+| **Ambient Light** | Scene ambient light intensity |
+| **Wire Opacity** | Edge opacity in Wireframe mode |
+| **Cars** | Toggle traffic simulation on/off; slider sets car count |
+
+### In-browser generator
+
+Click **Generate City** in the left panel to build a city directly in the browser without running Python. All options are available, and the result can be downloaded as an `.obj` file. Generated cities support traffic simulation on all surface types including sphere, hemisphere, and torus.
+
 ### Traffic simulation
 
-Cities generated with `--traffic` export a `_traffic.json` file alongside the `.obj`. When the viewer loads a city that has a matching traffic file it enables a car spawner — use the slider in the right panel to set the number of vehicles. Cars follow road segments and pick random turns at intersections.
+Cities generated with `--traffic` (CLI) or via the browser generator export a `_traffic.json` file alongside the `.obj`. When the viewer loads a city that has a matching traffic file it enables a car spawner — use the slider in the right panel to set the number of vehicles. Cars follow road segments and pick random turns at intersections. On curved surfaces (sphere, hemisphere, torus) cars are lifted along the surface normal and oriented correctly relative to the road and surface.
 
 ## All options
 
@@ -63,7 +82,6 @@ Cities generated with `--traffic` export a `_traffic.json` file alongside the `.
 | `--max-floors N` | `18` | Maximum storeys anywhere in the city |
 | `--dist` | `uniform` | Height distribution: `uniform`, `gumbel` (right-skewed), `normal` |
 | `--no-base` | off | Omit the ground base plate |
-| `--triangle-blocks` | off | Split each city block into two triangular lots |
 | `--diagonal-road` | off | Add a SW→NE diagonal boulevard |
 | `--voronoi` | off | Use Voronoi cell edges as the boulevard network |
 | `--highways N` | `1` | Number of raised dual-carriageway highway splines |
@@ -158,7 +176,7 @@ python main.py --seed 7 --surface torus \
 
 ## Surface projection
 
-The `--surface` flag warps all generated geometry onto a curved surface after generation. The base plate is replaced with a full sphere or torus mesh so the result is always a complete closed solid with buildings on top.
+The `--surface` flag warps all generated geometry onto a curved surface after generation. The base plate is replaced with a full sphere or torus mesh so the result is always a complete closed solid with buildings on top. Boulevards are subdivided into short segments before warping so they follow the surface smoothly.
 
 **Sphere** — maps X→longitude, Z→latitude, Y→radial offset. Building height stays perpendicular to the surface.
 

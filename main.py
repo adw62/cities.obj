@@ -195,11 +195,13 @@ def main():
     print(f"  {len(objects)} buildings placed" +
           (f"  ({removed} cleared for boulevards)" if removed else ""))
 
+    blvd_max_seg = 10.0 if args.surface != "flat" else 0.0
     for i, (bx1, bz1, bx2, bz2, *_) in enumerate(boulevards[:n_street_blvd]):
-        objects.append((f"boulevard_{i:03d}", road_strip(bx1, bz1, bx2, bz2, cfg.street_width, cfg.road_height)))
+        objects.append((f"boulevard_{i:03d}", road_strip(bx1, bz1, bx2, bz2, cfg.street_width, cfg.road_height, blvd_max_seg)))
 
     objects.extend(highway_objects)
 
+    wfn = None
     if args.surface != "flat":
         from procity.warp import (sphere_warp, sphere_mesh,
                                    hemisphere_warp, hemisphere_mesh,
@@ -240,8 +242,9 @@ def main():
             objects.insert(0, ("base_plate", base_plate(bw, bd, cfg.base_thickness)))
 
     # ── Traffic JSON (road segments for viewer car simulation) ────────────────
-    traffic_segs = []
-    road_y = cfg.road_height * cfg.scale
+    # Build segments in unscaled metres, then warp (if curved) and scale.
+    traffic_segs_raw = []
+    road_y_raw = cfg.road_height
 
     pitch_x = cfg.block_width + cfg.street_width
     pitch_z = cfg.block_depth + cfg.street_width
@@ -251,15 +254,38 @@ def main():
     total_d = n_bz * pitch_z - cfg.street_width
     ox, oz = -total_w / 2, -total_d / 2
 
-    s = cfg.scale
     for bx in range(n_bx - 1):
-        x = (ox + (bx + 1) * pitch_x - cfg.street_width / 2) * s
-        traffic_segs.append({"start": [x, road_y, oz * s], "end": [x, road_y, (oz + total_d) * s], "type": "street"})
+        x = ox + (bx + 1) * pitch_x - cfg.street_width / 2
+        traffic_segs_raw.append({"start": [x, road_y_raw, oz], "end": [x, road_y_raw, oz + total_d], "type": "street"})
     for bz in range(n_bz - 1):
-        z = (oz + (bz + 1) * pitch_z - cfg.street_width / 2) * s
-        traffic_segs.append({"start": [ox * s, road_y, z], "end": [(ox + total_w) * s, road_y, z], "type": "street"})
+        z = oz + (bz + 1) * pitch_z - cfg.street_width / 2
+        traffic_segs_raw.append({"start": [ox, road_y_raw, z], "end": [ox + total_w, road_y_raw, z], "type": "street"})
     for bx1, bz1, bx2, bz2, *_ in boulevards[:n_street_blvd]:
-        traffic_segs.append({"start": [bx1 * s, road_y, bz1 * s], "end": [bx2 * s, road_y, bz2 * s], "type": "boulevard"})
+        traffic_segs_raw.append({"start": [bx1, road_y_raw, bz1], "end": [bx2, road_y_raw, bz2], "type": "boulevard"})
+
+    s = cfg.scale
+    traffic_segs = []
+    if wfn is not None:
+        import numpy as _np
+        for seg in traffic_segs_raw:
+            p0 = _np.array([seg["start"]], float)
+            p1 = _np.array([seg["end"]], float)
+            seg_len_m = float(_np.hypot(p1[0, 0] - p0[0, 0], p1[0, 2] - p0[0, 2]))
+            n_sub = max(1, math.ceil(seg_len_m / 10.0))
+            for i in range(n_sub):
+                t0, t1 = i / n_sub, (i + 1) / n_sub
+                q0 = p0 + (p1 - p0) * t0
+                q1 = p0 + (p1 - p0) * t1
+                w0 = (wfn(q0)[0] * s).tolist()
+                w1 = (wfn(q1)[0] * s).tolist()
+                traffic_segs.append({"start": w0, "end": w1, "type": seg["type"]})
+    else:
+        for seg in traffic_segs_raw:
+            traffic_segs.append({
+                "start": [v * s for v in seg["start"]],
+                "end":   [v * s for v in seg["end"]],
+                "type":  seg["type"],
+            })
 
     traffic_path = args.output.replace(".obj", "_traffic.json")
     write_traffic_json(traffic_segs, traffic_path, cfg.street_width * s)
