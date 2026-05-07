@@ -309,8 +309,23 @@
 <!-- Side panel -->
 <div id="panel">
   <div class="panel-section">
-    <label>Model Color</label>
+    <label>Base Color</label>
+    <input type="color" id="color-base" value="#1a1a2e">
+  </div>
+  <div class="panel-section">
+    <label>Building Color</label>
     <input type="color" id="color-pick" value="#4488cc">
+  </div>
+  <div class="panel-section">
+    <label>Road Color</label>
+    <input type="color" id="color-road" value="#334455">
+  </div>
+  <div class="panel-section">
+    <label>Depth Fog</label>
+    <label style="display:flex;gap:8px;align-items:center;text-transform:none;color:#aaa;font-size:11px;margin-bottom:4px">
+      <input type="checkbox" id="fog-toggle"> Enable
+    </label>
+    <input type="range" id="fog-density" min="0.002" max="0.06" step="0.001" value="0.015">
   </div>
   <div class="panel-section">
     <label>Rotation Speed</label>
@@ -359,7 +374,7 @@ document.getElementById('canvas-container').appendChild(renderer.domElement);
 // ── Scene / Camera ────────────────────────────────────────
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0a12);
-scene.fog = new THREE.Fog(0x0a0a12, 200, 600);
+scene.fog = null;
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
 camera.position.set(0, 60, 120);
@@ -388,8 +403,19 @@ let currentObj = null;
 let rainSystem = null;
 let mode = 'orbit';
 let modelColor = new THREE.Color(0x4488cc);
+let baseColor  = new THREE.Color(0x1a1a2e);
+let roadColor  = new THREE.Color(0x334455);
+let fogEnabled = false;
+let fogDensity = 0.015;
 let rotSpeed = 0.0015;
+
 controls.autoRotateSpeed = rotSpeed * 300;
+
+function partColor(name) {
+  if (name === 'base_plate') return baseColor;
+  if (name && (name.startsWith('boulevard') || name.startsWith('highway'))) return roadColor;
+  return modelColor;
+}
 let autoScale = 1;
 let modelCenter = new THREE.Vector3();
 let clock = new THREE.Clock();
@@ -592,9 +618,10 @@ function applyMaterial(obj) {
   const opacity = parseFloat(document.getElementById('wire-opacity').value);
   obj.traverse(c => {
     if (!c.isMesh || c.userData.isCar) return;
+    const col = partColor(c.name || '');
     c.material = isWire
-      ? new THREE.MeshBasicMaterial({ color: modelColor, wireframe: true, transparent: true, opacity })
-      : new THREE.MeshStandardMaterial({ color: modelColor, metalness: 0.2, roughness: 0.7, side: THREE.DoubleSide });
+      ? new THREE.MeshBasicMaterial({ color: col, wireframe: true, transparent: true, opacity })
+      : new THREE.MeshStandardMaterial({ color: col, metalness: 0.2, roughness: 0.7, side: THREE.DoubleSide });
   });
 }
 
@@ -685,9 +712,33 @@ document.getElementById('model-select').addEventListener('change', e => {
   loadModel(e.target.value);
 });
 
+document.getElementById('color-base').addEventListener('input', e => {
+  baseColor = new THREE.Color(e.target.value);
+  if (currentObj) applyMaterial(currentObj);
+});
+
 document.getElementById('color-pick').addEventListener('input', e => {
   modelColor = new THREE.Color(e.target.value);
   if (currentObj) applyMaterial(currentObj);
+});
+
+document.getElementById('color-road').addEventListener('input', e => {
+  roadColor = new THREE.Color(e.target.value);
+  if (currentObj) applyMaterial(currentObj);
+});
+
+function applyFog() {
+  scene.fog = fogEnabled ? new THREE.FogExp2(0x0a0a12, fogDensity) : null;
+}
+
+document.getElementById('fog-toggle').addEventListener('change', e => {
+  fogEnabled = e.target.checked;
+  applyFog();
+});
+
+document.getElementById('fog-density').addEventListener('input', e => {
+  fogDensity = parseFloat(e.target.value);
+  if (fogEnabled) applyFog();
 });
 
 
@@ -865,14 +916,16 @@ document.getElementById('btn-generate').addEventListener('click', () => {
     }
 
     const group = new THREE.Group();
-    for (const { verts, faces } of objects) {
+    for (const { name, verts, faces } of objects) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
       geo.setIndex(new THREE.BufferAttribute(faces, 1));
       const flat = geo.toNonIndexed();
       flat.computeVertexNormals();
-      const mat = new THREE.MeshStandardMaterial({ color: modelColor, metalness: 0.2, roughness: 0.7, side: THREE.DoubleSide });
-      group.add(new THREE.Mesh(flat, mat));
+      const mat = new THREE.MeshStandardMaterial({ color: partColor(name), metalness: 0.2, roughness: 0.7, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(flat, mat);
+      mesh.name = name;
+      group.add(mesh);
     }
 
     // Auto-centre and scale
