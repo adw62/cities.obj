@@ -363,10 +363,11 @@
 import * as THREE from 'three';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // ── Renderer ──────────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = false;
 document.getElementById('canvas-container').appendChild(renderer.domElement);
@@ -411,10 +412,13 @@ let rotSpeed = 0.0015;
 
 controls.autoRotateSpeed = rotSpeed * 300;
 
-function partColor(name) {
-  if (name === 'base_plate') return baseColor;
-  if (name && (name.startsWith('boulevard') || name.startsWith('highway'))) return roadColor;
-  return modelColor;
+function colorKey(name) {
+  if (name === 'base_plate') return 'base';
+  if (name && (name.startsWith('boulevard') || name.startsWith('highway'))) return 'road';
+  return 'building';
+}
+function colorFor(key) {
+  return key === 'base' ? baseColor : key === 'road' ? roadColor : modelColor;
 }
 let autoScale = 1;
 let modelCenter = new THREE.Vector3();
@@ -493,6 +497,9 @@ function nextSegment(curIdx, arrivedAtEnd) {
   return { segIdx: curIdx, dir: arrivedAtEnd ? -1 : 1 };
 }
 
+let carInstancedMesh = null;
+const _carColor = new THREE.Color();
+
 function spawnCars() {
   removeCars();
   if (!trafficData || !currentObj) return;
@@ -502,88 +509,64 @@ function spawnCars() {
   const sw = trafficData.street_width;
   const carLen = sw * 1.2, carW = sw * 0.4, carH = sw * 0.5;
   const geo = new THREE.BoxGeometry(carW, carH, carLen);
+  const mat = new THREE.MeshLambertMaterial();
   const count = parseInt(document.getElementById('car-count').value);
+
+  carInstancedMesh = new THREE.InstancedMesh(geo, mat, count);
+  carInstancedMesh.userData.isCar = true;
+  carInstancedMesh.frustumCulled = false;
+  carInstancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
   for (let i = 0; i < count; i++) {
     const segIdx = Math.floor(Math.random() * segs.length);
     const dir = Math.random() < 0.5 ? 1 : -1;
     const t = Math.random();
-    const color = new THREE.Color().setHSL(Math.random(), 0.9, 0.55);
-    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color }));
-    mesh.userData.isCar = true;
-    currentObj.add(mesh);
+    _carColor.setHSL(Math.random(), 0.9, 0.55);
+    carInstancedMesh.setColorAt(i, _carColor);
     const baseSpeed = CAR_SPEED * (0.85 + Math.random() * 0.3);
-    carData.push({ mesh, segIdx, dir, t, baseSpeed, currentSpeed: baseSpeed, lateralT: 0, _prevOncomingGap: Infinity });
+    carData.push({ idx: i, segIdx, dir, t, baseSpeed, currentSpeed: baseSpeed, lateralT: 0, _prevOncomingGap: Infinity });
   }
-  updateCarPositions();
+  if (carInstancedMesh.instanceColor) carInstancedMesh.instanceColor.needsUpdate = true;
+  currentObj.add(carInstancedMesh);
+  updateCars(0); // initial transform write — dt=0 so AI lerps are no-ops
 }
 
 function removeCars() {
-  carData.forEach(c => {
-    if (c.mesh.parent) c.mesh.parent.remove(c.mesh);
-    c.mesh.geometry.dispose();
-    c.mesh.material.dispose();
-  });
+  if (carInstancedMesh) {
+    if (carInstancedMesh.parent) carInstancedMesh.parent.remove(carInstancedMesh);
+    carInstancedMesh.geometry.dispose();
+    carInstancedMesh.material.dispose();
+    carInstancedMesh = null;
+  }
   carData = [];
+  _segBuckets.clear();
 }
 
-function updateCarPositions() {
-  if (!trafficData) return;
+// Single-pass AI + transform write. Folds the old updateCars+updateCarPositions
+// loops together so each car only does one segment lookup per frame.
+function updateCars(dt) {
+  if (!trafficData || !carInstancedMesh) return;
+  const segs = trafficData.segments;
+  const sw = trafficData.street_width;
+  const followDist  = sw * FOLLOW_SW;
+  const minGapDist  = sw * MIN_GAP_SW;
+  const oncomingDist = sw * ONCOMING_SW;
+  const clearDist   = sw * CLEAR_SW;
+  // farthest distance at which any cross-segment neighbour still matters
+  const maxScanDist = followDist > oncomingDist ? followDist : oncomingDist;
+  const followRange = followDist - minGapDist;
+
   const surf = trafficData.surface || 'flat';
   const isFlat = surf === 'flat';
   const isSphere = surf === 'sphere' || surf === 'hemisphere';
-  const sw = trafficData.street_width;
   const lift = sw * 0.25;
   const laneOff = sw * 0.28;
+  const lateralAmp = sw * 0.25;
   const torusMajor = isFlat || isSphere ? 0 : (trafficData.torus_major_sc || 0);
-  for (let i = 0; i < carData.length; i++) {
-    const car = carData[i];
-    const seg = trafficData.segments[car.segIdx];
-    const s = car.dir === 1 ? seg.start : seg.end;
-    const e = car.dir === 1 ? seg.end : seg.start;
-    const t = car.t;
-    const x = s[0] + (e[0] - s[0]) * t;
-    const y = s[1] + (e[1] - s[1]) * t;
-    const z = s[2] + (e[2] - s[2]) * t;
-    const dx = e[0] - s[0], dy = e[1] - s[1], dz = e[2] - s[2];
-    const lane = seg.type === 'boulevard' ? laneOff : car.lateralT * sw * 0.25;
+  const m = _carM4;
+  const ela = m.elements;
 
-    if (!isFlat && (dx || dy || dz)) {
-      if (isSphere) {
-        _carNorm.set(x, y, z).normalize();
-      } else {
-        const xzl = Math.hypot(x, z) || 1e-9;
-        _carNorm.set(x - x/xzl*torusMajor, y, z - z/xzl*torusMajor).normalize();
-      }
-      car.mesh.position.set(
-        x + _carNorm.x * lift,
-        y + _carNorm.y * lift,
-        z + _carNorm.z * lift
-      );
-      _carFwd.set(dx, dy, dz).normalize();
-      _carRight.crossVectors(_carNorm, _carFwd).normalize();
-      _carUp.crossVectors(_carFwd, _carRight);
-      _carM4.makeBasis(_carRight, _carUp, _carFwd);
-      car.mesh.quaternion.setFromRotationMatrix(_carM4);
-      if (lane) car.mesh.position.addScaledVector(_carRight, lane);
-    } else {
-      const xzLen = Math.hypot(dx, dz);
-      const lx = xzLen > 0 ? lane * dz / xzLen : 0;
-      const lz = xzLen > 0 ? -lane * dx / xzLen : 0;
-      car.mesh.position.set(x + lx, y + lift, z + lz);
-      const a = Math.atan2(dx, dz);
-      car.mesh.quaternion.set(0, Math.sin(a * 0.5), 0, Math.cos(a * 0.5));
-    }
-  }
-}
-
-function updateCars(dt) {
-  if (!trafficData) return;
-  const sw = trafficData.street_width;
-  const oncomingDist = sw * ONCOMING_SW; // world-space oncoming threshold
-  const clearDist    = sw * CLEAR_SW;
-
-  // bucket cars by segment
+  // bucket cars by segment (reuse arrays — no GC churn)
   for (const b of _segBuckets.values()) b.length = 0;
   for (let i = 0; i < carData.length; i++) {
     const car = carData[i];
@@ -594,76 +577,126 @@ function updateCars(dt) {
 
   for (let i = 0; i < carData.length; i++) {
     const car = carData[i];
-    const seg = trafficData.segments[car.segIdx];
+    let seg = segs[car.segIdx];
     const isBlvd = seg.type === 'boulevard';
+    const segLen = seg._len;
 
-    let minFollowWorld  = Infinity;
+    let minFollowWorld   = Infinity;
     let minOncomingWorld = Infinity;
 
-    // same-segment: following (same dir) + oncoming (opposite dir)
+    // same-segment scan — skip if we're alone on this segment
     const bucket = _segBuckets.get(car.segIdx);
-    for (let j = 0; j < bucket.length; j++) {
-      const other = bucket[j];
-      if (other === car) continue;
-      if (other.dir === car.dir) {
-        const gap = (other.t - car.t) * seg._len;
-        if (gap > 0 && gap < minFollowWorld) minFollowWorld = gap;
-      } else if (!isBlvd) {
-        const myFrac = car.dir === 1 ? car.t : 1 - car.t;
-        const otFrac = other.dir === 1 ? other.t : 1 - other.t;
-        const wg = (myFrac > otFrac ? myFrac - otFrac : otFrac - myFrac) * seg._len;
-        if (wg < minOncomingWorld) minOncomingWorld = wg;
+    if (bucket.length > 1) {
+      const myFrac = car.dir === 1 ? car.t : 1 - car.t;
+      for (let j = 0; j < bucket.length; j++) {
+        const other = bucket[j];
+        if (other === car) continue;
+        if (other.dir === car.dir) {
+          const gap = (other.t - car.t) * segLen;
+          if (gap > 0 && gap < minFollowWorld) minFollowWorld = gap;
+        } else if (!isBlvd) {
+          const otFrac = other.dir === 1 ? other.t : 1 - other.t;
+          const d = myFrac > otFrac ? myFrac - otFrac : otFrac - myFrac;
+          const wg = d * segLen;
+          if (wg < minOncomingWorld) minOncomingWorld = wg;
+        }
       }
     }
 
-    // cross-segment: following (same dir) + oncoming (opposite dir) one segment ahead
-    const frontKey = car.dir === 1 ? seg._ek : seg._sk;
-    const adj = adjacency[frontKey];
-    if (adj) {
-      const myRemaining = (1 - car.t) * seg._len;
-      for (let k = 0; k < adj.length; k++) {
-        const opt = adj[k];
-        if (opt.segIdx === car.segIdx) continue;
-        const nSeg = trafficData.segments[opt.segIdx];
-        const nb = _segBuckets.get(opt.segIdx);
-        if (!nb) continue;
-        for (let j = 0; j < nb.length; j++) {
-          const other = nb[j];
-          if (other.dir === opt.dir) {
-            const wg = myRemaining + other.t * nSeg._len;
-            if (wg < minFollowWorld) minFollowWorld = wg;
-          } else if (!isBlvd && nSeg.type !== 'boulevard') {
-            const wg = myRemaining + (1 - other.t) * nSeg._len;
-            if (wg < minOncomingWorld) minOncomingWorld = wg;
+    // cross-segment scan — only bother when we're close enough to the end
+    // for a neighbour on the next segment to actually be in range.
+    const myRemaining = (1 - car.t) * segLen;
+    if (myRemaining < maxScanDist) {
+      const frontKey = car.dir === 1 ? seg._ek : seg._sk;
+      const adj = adjacency[frontKey];
+      if (adj) {
+        for (let k = 0; k < adj.length; k++) {
+          const opt = adj[k];
+          if (opt.segIdx === car.segIdx) continue;
+          const nb = _segBuckets.get(opt.segIdx);
+          if (!nb || !nb.length) continue;
+          const nSeg = segs[opt.segIdx];
+          const nSegLen = nSeg._len;
+          const nIsBlvd = nSeg.type === 'boulevard';
+          for (let j = 0; j < nb.length; j++) {
+            const other = nb[j];
+            if (other.dir === opt.dir) {
+              const wg = myRemaining + other.t * nSegLen;
+              if (wg < minFollowWorld) minFollowWorld = wg;
+            } else if (!isBlvd && !nIsBlvd) {
+              const wg = myRemaining + (1 - other.t) * nSegLen;
+              if (wg < minOncomingWorld) minOncomingWorld = wg;
+            }
           }
         }
       }
     }
 
-    // speed: slow for car ahead
-    const followDist = sw * FOLLOW_SW;
-    const minGapDist  = sw * MIN_GAP_SW;
+    // speed: brake for car ahead, otherwise accelerate to baseSpeed
     const targetSpeed = minFollowWorld <= minGapDist ? 0
-      : minFollowWorld < followDist ? car.baseSpeed * (minFollowWorld - minGapDist) / (followDist - minGapDist)
+      : minFollowWorld < followDist ? car.baseSpeed * (minFollowWorld - minGapDist) / followRange
       : car.baseSpeed;
     const rate = targetSpeed < car.currentSpeed ? BRAKE_RATE : ACCEL_RATE;
-    car.currentSpeed += (targetSpeed - car.currentSpeed) * Math.min(1, rate * dt);
+    const sLerp = rate * dt; car.currentSpeed += (targetSpeed - car.currentSpeed) * (sLerp < 1 ? sLerp : 1);
 
-    // lateral: shift right for oncoming car
+    // lateral: shift right when an oncoming car is approaching (gap closing)
     const postPass = minOncomingWorld > car._prevOncomingGap;
     car._prevOncomingGap = minOncomingWorld;
     const clearThresh = postPass ? clearDist : oncomingDist;
     const lateralTarget = (!isBlvd && minOncomingWorld < clearThresh) ? 1 : 0;
     const lRate = lateralTarget > car.lateralT ? 2.5 : 3;
-    car.lateralT += (lateralTarget - car.lateralT) * Math.min(1, lRate * dt);
+    const lLerp = lRate * dt; car.lateralT += (lateralTarget - car.lateralT) * (lLerp < 1 ? lLerp : 1);
 
-    car.t += seg._len > 0 ? (car.currentSpeed * dt) / seg._len : 0;
+    // advance along segment, hop to next segment if we ran off the end
+    if (segLen > 0) car.t += (car.currentSpeed * dt) / segLen;
     if (car.t >= 1) {
       const next = nextSegment(car.segIdx, car.dir === 1);
       car.segIdx = next.segIdx; car.dir = next.dir; car.t = 0;
+      seg = segs[car.segIdx];
     }
+
+    // ── Render: write transform straight into the InstancedMesh buffer ──
+    const s = car.dir === 1 ? seg.start : seg.end;
+    const e = car.dir === 1 ? seg.end : seg.start;
+    const ct = car.t;
+    const x = s[0] + (e[0] - s[0]) * ct;
+    const y = s[1] + (e[1] - s[1]) * ct;
+    const z = s[2] + (e[2] - s[2]) * ct;
+    const dx = e[0] - s[0], dy = e[1] - s[1], dz = e[2] - s[2];
+    const lane = seg.type === 'boulevard' ? laneOff : car.lateralT * lateralAmp;
+
+    if (!isFlat && (dx || dy || dz)) {
+      if (isSphere) {
+        _carNorm.set(x, y, z).normalize();
+      } else {
+        const xzl = Math.sqrt(x*x + z*z) || 1e-9;
+        const k = torusMajor / xzl;
+        _carNorm.set(x - x*k, y, z - z*k).normalize();
+      }
+      _carFwd.set(dx, dy, dz).normalize();
+      _carRight.crossVectors(_carNorm, _carFwd).normalize();
+      _carUp.crossVectors(_carFwd, _carRight);
+      m.makeBasis(_carRight, _carUp, _carFwd);
+      ela[12] = x + _carNorm.x * lift + _carRight.x * lane;
+      ela[13] = y + _carNorm.y * lift + _carRight.y * lane;
+      ela[14] = z + _carNorm.z * lift + _carRight.z * lane;
+    } else {
+      // flat: build rotation-Y matrix directly from (dx,dz) — no atan2/sin/cos
+      const xzLen = Math.sqrt(dx*dx + dz*dz);
+      const inv = xzLen > 0 ? 1 / xzLen : 0;
+      const cs = dz * inv;  // cos(heading)
+      const sn = dx * inv;  // sin(heading)
+      ela[0] = cs;  ela[1] = 0; ela[2]  = -sn; ela[3]  = 0;
+      ela[4] = 0;   ela[5] = 1; ela[6]  = 0;   ela[7]  = 0;
+      ela[8] = sn;  ela[9] = 0; ela[10] = cs;  ela[11] = 0;
+      ela[12] = x + lane * cs;
+      ela[13] = y + lift;
+      ela[14] = z - lane * sn;
+      ela[15] = 1;
+    }
+    carInstancedMesh.setMatrixAt(car.idx, m);
   }
-  updateCarPositions();
+  carInstancedMesh.instanceMatrix.needsUpdate = true;
 }
 
 // ── OBJ Loader ────────────────────────────────────────────
@@ -680,22 +713,20 @@ function loadModel(path) {
   removeRain();
 
   loader.load(path, (obj) => {
-    // Auto-center and scale to fit
     const box = new THREE.Box3().setFromObject(obj);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const targetSize = 80;
-    autoScale = targetSize / maxDim;
+    autoScale = 80 / Math.max(size.x, size.y, size.z);
     modelCenter.copy(center);
 
-    const sliderVal = 1;
-    obj.scale.setScalar(autoScale * sliderVal);
-    obj.position.copy(modelCenter).multiplyScalar(-(autoScale * sliderVal));
+    const merged = buildMergedFromObj(obj);
+    obj.traverse(c => { if (c.isMesh) { c.geometry.dispose(); c.material.dispose(); } });
+    merged.scale.setScalar(autoScale);
+    merged.position.copy(modelCenter).multiplyScalar(-autoScale);
 
-    applyMaterial(obj);
-    scene.add(obj);
-    currentObj = obj;
+    scene.add(merged);
+    currentObj = merged;
+    applyWireframe();
 
     if (mode === 'rain') buildRain();
     loadTrafficJSON(path);
@@ -707,15 +738,52 @@ function loadModel(path) {
   });
 }
 
-function applyMaterial(obj) {
+function mergeMeshes(meshes, key) {
+  if (!meshes.length) return null;
+  const flatGeos = meshes.map(m => {
+    m.updateMatrixWorld(true);
+    let g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+    g.applyMatrix4(m.matrixWorld);
+    for (const k of Object.keys(g.attributes)) if (k !== 'position') g.deleteAttribute(k);
+    return g;
+  });
+  const merged = mergeGeometries(flatGeos);
+  flatGeos.forEach(g => g.dispose());
+  if (!merged) return null;
+  merged.computeVertexNormals();
+  const mesh = new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ color: colorFor(key), side: THREE.DoubleSide }));
+  mesh.userData.colorKey = key;
+  return mesh;
+}
+
+function buildMergedFromObj(obj) {
+  const groups = { base: [], road: [], building: [] };
+  obj.traverse(c => { if (c.isMesh && !c.userData.isCar) groups[colorKey(c.name)].push(c); });
+  const out = new THREE.Group();
+  for (const key of ['base', 'road', 'building']) {
+    const mesh = mergeMeshes(groups[key], key);
+    if (mesh) out.add(mesh);
+  }
+  return out;
+}
+
+function updateColors() {
+  if (!currentObj) return;
+  currentObj.traverse(c => {
+    if (!c.isMesh || !c.userData.colorKey) return;
+    c.material.color.copy(colorFor(c.userData.colorKey));
+  });
+}
+
+function applyWireframe() {
+  if (!currentObj) return;
   const isWire = mode === 'wireframe';
   const opacity = parseFloat(document.getElementById('wire-opacity').value);
-  obj.traverse(c => {
-    if (!c.isMesh || c.userData.isCar) return;
-    const col = partColor(c.name || '');
-    c.material = isWire
-      ? new THREE.MeshBasicMaterial({ color: col, wireframe: true, transparent: true, opacity })
-      : new THREE.MeshStandardMaterial({ color: col, metalness: 0.2, roughness: 0.7, side: THREE.DoubleSide });
+  currentObj.traverse(c => {
+    if (!c.isMesh || !c.userData.colorKey) return;
+    c.material.wireframe = isWire;
+    c.material.transparent = isWire;
+    c.material.opacity = isWire ? opacity : 1;
   });
 }
 
@@ -800,7 +868,7 @@ document.querySelectorAll('#topbar [data-mode]').forEach(btn => {
       sun.color.set(0xfff4cc);
     }
 
-    if (currentObj) applyMaterial(currentObj);
+    applyWireframe();
   });
 });
 
@@ -809,18 +877,18 @@ document.getElementById('model-select').addEventListener('change', e => {
 });
 
 document.getElementById('color-base').addEventListener('input', e => {
-  baseColor = new THREE.Color(e.target.value);
-  if (currentObj) applyMaterial(currentObj);
+  baseColor.set(e.target.value);
+  updateColors();
 });
 
 document.getElementById('color-pick').addEventListener('input', e => {
-  modelColor = new THREE.Color(e.target.value);
-  if (currentObj) applyMaterial(currentObj);
+  modelColor.set(e.target.value);
+  updateColors();
 });
 
 document.getElementById('color-road').addEventListener('input', e => {
-  roadColor = new THREE.Color(e.target.value);
-  if (currentObj) applyMaterial(currentObj);
+  roadColor.set(e.target.value);
+  updateColors();
 });
 
 function applyFog() {
@@ -847,8 +915,8 @@ document.getElementById('ambient-slider').addEventListener('input', e => {
   ambient.intensity = parseFloat(e.target.value);
 });
 
-document.getElementById('wire-opacity').addEventListener('input', e => {
-  if (currentObj && mode === 'wireframe') applyMaterial(currentObj);
+document.getElementById('wire-opacity').addEventListener('input', () => {
+  if (mode === 'wireframe') applyWireframe();
 });
 
 
@@ -1011,16 +1079,33 @@ document.getElementById('btn-generate').addEventListener('click', () => {
       currentObj.traverse(c => { if (c.isMesh) { c.geometry.dispose(); c.material.dispose(); } });
     }
 
-    const group = new THREE.Group();
+    // Group raw geometry by color category — collapses hundreds of meshes to 3 draw calls
+    const groupBuf = { base: { totalIdx: 0, parts: [] }, road: { totalIdx: 0, parts: [] }, building: { totalIdx: 0, parts: [] } };
     for (const { name, verts, faces } of objects) {
+      const k = colorKey(name);
+      groupBuf[k].parts.push({ verts, faces });
+      groupBuf[k].totalIdx += faces.length;
+    }
+
+    const group = new THREE.Group();
+    for (const key of ['base', 'road', 'building']) {
+      const g = groupBuf[key];
+      if (!g.totalIdx) continue;
+      const positions = new Float32Array(g.totalIdx * 3);
+      let off = 0;
+      for (const { verts, faces } of g.parts) {
+        for (let i = 0; i < faces.length; i++) {
+          const idx = faces[i] * 3;
+          positions[off++] = verts[idx];
+          positions[off++] = verts[idx + 1];
+          positions[off++] = verts[idx + 2];
+        }
+      }
       const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-      geo.setIndex(new THREE.BufferAttribute(faces, 1));
-      const flat = geo.toNonIndexed();
-      flat.computeVertexNormals();
-      const mat = new THREE.MeshStandardMaterial({ color: partColor(name), metalness: 0.2, roughness: 0.7, side: THREE.DoubleSide });
-      const mesh = new THREE.Mesh(flat, mat);
-      mesh.name = name;
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.computeVertexNormals();
+      const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: colorFor(key), side: THREE.DoubleSide }));
+      mesh.userData.colorKey = key;
       group.add(mesh);
     }
 
