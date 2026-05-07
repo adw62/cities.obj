@@ -212,12 +212,27 @@ def windowed_box(w: float, h: float, d: float, n_floors: int,
 
 
 def road_strip(x1: float, z1: float, x2: float, z2: float,
-               width: float, height: float = 0.5) -> Mesh:
-    """Shallow road slab between two world-space XZ points, sitting on Y=0."""
+               width: float, height: float = 0.5,
+               max_seg: float = 0.0) -> Mesh:
+    """Shallow road slab between two world-space XZ points, sitting on Y=0.
+
+    If max_seg > 0 the strip is divided into segments of at most that length
+    so it follows curved surfaces smoothly after warping.
+    """
     dx, dz = x2 - x1, z2 - z1
     length = float(np.hypot(dx, dz))
     angle = float(np.arctan2(dz, dx))
     cx, cz = (x1 + x2) / 2, (z1 + z2) / 2
+
+    if max_seg > 0.0 and length > max_seg:
+        n = int(np.ceil(length / max_seg))
+        seg_len = length / n
+        acc = empty()
+        for i in range(n):
+            ox = -length / 2 + (i + 0.5) * seg_len
+            acc = acc.merge(box(seg_len, height, width).transform(pos=(ox, 0.0, 0.0)))
+        return acc.transform(pos=(cx, 0.0, cz), rot_y=angle)
+
     return box(length, height, width).transform(pos=(cx, 0.0, cz), rot_y=angle)
 
 
