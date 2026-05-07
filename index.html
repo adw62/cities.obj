@@ -366,7 +366,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // ── Renderer ──────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(devicePixelRatio);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = false;
 document.getElementById('canvas-container').appendChild(renderer.domElement);
@@ -419,6 +419,7 @@ function partColor(name) {
 let autoScale = 1;
 let modelCenter = new THREE.Vector3();
 let clock = new THREE.Clock();
+const _bgColor = new THREE.Color(); // reused each frame in day/night mode
 const status = document.getElementById('status');
 
 // ── Traffic / Cars ─────────────────────────────────────────
@@ -427,15 +428,17 @@ let trafficData = null;
 let adjacency = {};   // ptKey -> [{segIdx, dir}]  dir: 1=forward, -1=backward
 let carData = [];     // per-car state
 const CAR_SPEED = 0.014; // OBJ units per second — base speed
-const FOLLOW_GAP = 0.12;  // t-space gap to maintain behind car ahead
-const BRAKE_RATE = 6;     // currentSpeed lerp rate when slowing
-const ACCEL_RATE = 2;     // currentSpeed lerp rate when speeding up
-const ONCOMING_GAP = 0.05; // t-space distance to start yielding to oncoming
-const LATERAL_RATE = 3;   // lerp rate for sideways drift
-// pre-allocated temporaries to avoid per-frame GC pressure
+const FOLLOW_SW   = 7;   // following detect distance in street-width units
+const MIN_GAP_SW  = 1.5; // stop zone in street-width units (~1.25 car lengths)
+const BRAKE_RATE  = 6;   // currentSpeed lerp rate when slowing
+const ACCEL_RATE  = 2;   // currentSpeed lerp rate when speeding up
+const ONCOMING_SW = 5;   // oncoming detect distance in street-width units
+const CLEAR_SW    = 1.5; // lateral clear distance post-pass in street-width units
+// pre-allocated temporaries — avoid per-frame GC
 const _carFwd = new THREE.Vector3(), _carNorm = new THREE.Vector3(),
       _carRight = new THREE.Vector3(), _carUp = new THREE.Vector3(),
       _carM4 = new THREE.Matrix4();
+const _segBuckets = new Map(); // reused each frame — O(N) neighbour scan
 
 function ptKey(x, y, z, tol) {
   return `${Math.round(x/tol)},${Math.round(y/tol)},${Math.round(z/tol)}`;
@@ -459,28 +462,35 @@ function loadTrafficJSON(modelPath) {
 function buildAdjacency(data) {
   adjacency = {};
   const tol = data.street_width * 0.1;
-  data.segments.forEach((seg, i) => {
-    const sk = ptKey(seg.start[0], seg.start[1], seg.start[2], tol);
-    const ek = ptKey(seg.end[0], seg.end[1], seg.end[2], tol);
+  const segs = data.segments;
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    const ss = seg.start, se = seg.end;
+    const sk = ptKey(ss[0], ss[1], ss[2], tol);
+    const ek = ptKey(se[0], se[1], se[2], tol);
+    seg._sk = sk; seg._ek = ek;
+    seg._len = Math.hypot(se[0]-ss[0], se[1]-ss[1], se[2]-ss[2]);
+    const sw = data.street_width, len = seg._len || 1e-6;
     if (!adjacency[sk]) adjacency[sk] = [];
     if (!adjacency[ek]) adjacency[ek] = [];
-    adjacency[sk].push({ segIdx: i, dir: 1 });   // leave start going forward
-    adjacency[ek].push({ segIdx: i, dir: -1 });  // leave end going backward
-  });
-}
-
-function segEndpoint(seg, atEnd) {
-  return atEnd ? seg.end : seg.start;
+    adjacency[sk].push({ segIdx: i, dir: 1 });
+    adjacency[ek].push({ segIdx: i, dir: -1 });
+  }
 }
 
 function nextSegment(curIdx, arrivedAtEnd) {
   const seg = trafficData.segments[curIdx];
-  const pt = segEndpoint(seg, arrivedAtEnd);
-  const tol = trafficData.street_width * 0.1;
-  const key = ptKey(pt[0], pt[1], pt[2], tol);
-  const options = (adjacency[key] || []).filter(o => o.segIdx !== curIdx);
-  if (!options.length) return { segIdx: curIdx, dir: arrivedAtEnd ? -1 : 1 }; // U-turn
-  return options[Math.floor(Math.random() * options.length)];
+  const key = arrivedAtEnd ? seg._ek : seg._sk;
+  const opts = adjacency[key];
+  if (!opts) return { segIdx: curIdx, dir: arrivedAtEnd ? -1 : 1 };
+  let count = 0;
+  for (let i = 0; i < opts.length; i++) if (opts[i].segIdx !== curIdx) count++;
+  if (!count) return { segIdx: curIdx, dir: arrivedAtEnd ? -1 : 1 };
+  let pick = Math.floor(Math.random() * count);
+  for (let i = 0; i < opts.length; i++) {
+    if (opts[i].segIdx !== curIdx && pick-- === 0) return opts[i];
+  }
+  return { segIdx: curIdx, dir: arrivedAtEnd ? -1 : 1 };
 }
 
 function spawnCars() {
@@ -498,11 +508,11 @@ function spawnCars() {
     const segIdx = Math.floor(Math.random() * segs.length);
     const dir = Math.random() < 0.5 ? 1 : -1;
     const t = Math.random();
-    const baseSpeed = CAR_SPEED * (0.85 + Math.random() * 0.3);
     const color = new THREE.Color().setHSL(Math.random(), 0.9, 0.55);
     const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color }));
     mesh.userData.isCar = true;
     currentObj.add(mesh);
+    const baseSpeed = CAR_SPEED * (0.85 + Math.random() * 0.3);
     carData.push({ mesh, segIdx, dir, t, baseSpeed, currentSpeed: baseSpeed, lateralT: 0, _prevOncomingGap: Infinity });
   }
   updateCarPositions();
@@ -520,26 +530,30 @@ function removeCars() {
 function updateCarPositions() {
   if (!trafficData) return;
   const surf = trafficData.surface || 'flat';
+  const isFlat = surf === 'flat';
+  const isSphere = surf === 'sphere' || surf === 'hemisphere';
   const sw = trafficData.street_width;
   const lift = sw * 0.25;
-  const laneOff = sw * 0.28; // half-lane offset for boulevards
-  carData.forEach(car => {
+  const laneOff = sw * 0.28;
+  const torusMajor = isFlat || isSphere ? 0 : (trafficData.torus_major_sc || 0);
+  for (let i = 0; i < carData.length; i++) {
+    const car = carData[i];
     const seg = trafficData.segments[car.segIdx];
     const s = car.dir === 1 ? seg.start : seg.end;
     const e = car.dir === 1 ? seg.end : seg.start;
-    const x = s[0] + (e[0] - s[0]) * car.t;
-    const y = s[1] + (e[1] - s[1]) * car.t;
-    const z = s[2] + (e[2] - s[2]) * car.t;
+    const t = car.t;
+    const x = s[0] + (e[0] - s[0]) * t;
+    const y = s[1] + (e[1] - s[1]) * t;
+    const z = s[2] + (e[2] - s[2]) * t;
     const dx = e[0] - s[0], dy = e[1] - s[1], dz = e[2] - s[2];
     const lane = seg.type === 'boulevard' ? laneOff : car.lateralT * sw * 0.25;
 
-    if (surf !== 'flat' && (dx || dy || dz)) {
-      if (surf === 'sphere' || surf === 'hemisphere') {
+    if (!isFlat && (dx || dy || dz)) {
+      if (isSphere) {
         _carNorm.set(x, y, z).normalize();
-      } else { // torus
-        const major = trafficData.torus_major_sc || 0;
+      } else {
         const xzl = Math.hypot(x, z) || 1e-9;
-        _carNorm.set(x - x/xzl*major, y, z - z/xzl*major).normalize();
+        _carNorm.set(x - x/xzl*torusMajor, y, z - z/xzl*torusMajor).normalize();
       }
       car.mesh.position.set(
         x + _carNorm.x * lift,
@@ -557,56 +571,98 @@ function updateCarPositions() {
       const lx = xzLen > 0 ? lane * dz / xzLen : 0;
       const lz = xzLen > 0 ? -lane * dx / xzLen : 0;
       car.mesh.position.set(x + lx, y + lift, z + lz);
-      car.mesh.rotation.set(0, Math.atan2(dx, dz), 0);
+      const a = Math.atan2(dx, dz);
+      car.mesh.quaternion.set(0, Math.sin(a * 0.5), 0, Math.cos(a * 0.5));
     }
-  });
+  }
 }
 
 function updateCars(dt) {
   if (!trafficData) return;
-  carData.forEach(car => {
+  const sw = trafficData.street_width;
+  const oncomingDist = sw * ONCOMING_SW; // world-space oncoming threshold
+  const clearDist    = sw * CLEAR_SW;
+
+  // bucket cars by segment
+  for (const b of _segBuckets.values()) b.length = 0;
+  for (let i = 0; i < carData.length; i++) {
+    const car = carData[i];
+    let b = _segBuckets.get(car.segIdx);
+    if (!b) { b = []; _segBuckets.set(car.segIdx, b); }
+    b.push(car);
+  }
+
+  for (let i = 0; i < carData.length; i++) {
+    const car = carData[i];
     const seg = trafficData.segments[car.segIdx];
     const isBlvd = seg.type === 'boulevard';
 
-    let minFollowGap = Infinity;
-    let minOncomingGap = Infinity;
-    for (const other of carData) {
-      if (other === car || other.segIdx !== car.segIdx) continue;
+    let minFollowWorld  = Infinity;
+    let minOncomingWorld = Infinity;
+
+    // same-segment: following (same dir) + oncoming (opposite dir)
+    const bucket = _segBuckets.get(car.segIdx);
+    for (let j = 0; j < bucket.length; j++) {
+      const other = bucket[j];
+      if (other === car) continue;
       if (other.dir === car.dir) {
-        const gap = other.t - car.t;
-        if (gap > 0 && gap < minFollowGap) minFollowGap = gap;
+        const gap = (other.t - car.t) * seg._len;
+        if (gap > 0 && gap < minFollowWorld) minFollowWorld = gap;
       } else if (!isBlvd) {
-        // convert both ts to raw segment fraction (start=0, end=1) to measure world gap
-        const myFrac  = car.dir   === 1 ? car.t   : 1 - car.t;
-        const otFrac  = other.dir === 1 ? other.t : 1 - other.t;
-        const gap = Math.abs(myFrac - otFrac);
-        if (gap < minOncomingGap) minOncomingGap = gap;
+        const myFrac = car.dir === 1 ? car.t : 1 - car.t;
+        const otFrac = other.dir === 1 ? other.t : 1 - other.t;
+        const wg = (myFrac > otFrac ? myFrac - otFrac : otFrac - myFrac) * seg._len;
+        if (wg < minOncomingWorld) minOncomingWorld = wg;
       }
     }
 
-    let speedMul = 1;
-    if (minFollowGap  < FOLLOW_GAP)   speedMul = Math.min(speedMul, minFollowGap / FOLLOW_GAP);
-    if (minOncomingGap < ONCOMING_GAP) speedMul = Math.min(speedMul, 0.7 + 0.3 * minOncomingGap / ONCOMING_GAP);
+    // cross-segment: following (same dir) + oncoming (opposite dir) one segment ahead
+    const frontKey = car.dir === 1 ? seg._ek : seg._sk;
+    const adj = adjacency[frontKey];
+    if (adj) {
+      const myRemaining = (1 - car.t) * seg._len;
+      for (let k = 0; k < adj.length; k++) {
+        const opt = adj[k];
+        if (opt.segIdx === car.segIdx) continue;
+        const nSeg = trafficData.segments[opt.segIdx];
+        const nb = _segBuckets.get(opt.segIdx);
+        if (!nb) continue;
+        for (let j = 0; j < nb.length; j++) {
+          const other = nb[j];
+          if (other.dir === opt.dir) {
+            const wg = myRemaining + other.t * nSeg._len;
+            if (wg < minFollowWorld) minFollowWorld = wg;
+          } else if (!isBlvd && nSeg.type !== 'boulevard') {
+            const wg = myRemaining + (1 - other.t) * nSeg._len;
+            if (wg < minOncomingWorld) minOncomingWorld = wg;
+          }
+        }
+      }
+    }
 
-    const target = car.baseSpeed * speedMul;
-    const rate = target < car.currentSpeed ? BRAKE_RATE : ACCEL_RATE;
-    car.currentSpeed += (target - car.currentSpeed) * Math.min(1, rate * dt);
+    // speed: slow for car ahead
+    const followDist = sw * FOLLOW_SW;
+    const minGapDist  = sw * MIN_GAP_SW;
+    const targetSpeed = minFollowWorld <= minGapDist ? 0
+      : minFollowWorld < followDist ? car.baseSpeed * (minFollowWorld - minGapDist) / (followDist - minGapDist)
+      : car.baseSpeed;
+    const rate = targetSpeed < car.currentSpeed ? BRAKE_RATE : ACCEL_RATE;
+    car.currentSpeed += (targetSpeed - car.currentSpeed) * Math.min(1, rate * dt);
 
-    const postPass = minOncomingGap > car._prevOncomingGap; // gap growing = already passed
-    car._prevOncomingGap = minOncomingGap;
-    const clearThresh = postPass ? 0.02 : ONCOMING_GAP;
-    const lateralTarget = (!isBlvd && minOncomingGap < clearThresh) ? 1 : 0;
+    // lateral: shift right for oncoming car
+    const postPass = minOncomingWorld > car._prevOncomingGap;
+    car._prevOncomingGap = minOncomingWorld;
+    const clearThresh = postPass ? clearDist : oncomingDist;
+    const lateralTarget = (!isBlvd && minOncomingWorld < clearThresh) ? 1 : 0;
     const lRate = lateralTarget > car.lateralT ? 2.5 : 3;
     car.lateralT += (lateralTarget - car.lateralT) * Math.min(1, lRate * dt);
 
-    const s = seg.start, e = seg.end;
-    const segLen = Math.hypot(e[0]-s[0], e[1]-s[1], e[2]-s[2]);
-    car.t += segLen > 0 ? (car.currentSpeed * dt) / segLen : 0;
+    car.t += seg._len > 0 ? (car.currentSpeed * dt) / seg._len : 0;
     if (car.t >= 1) {
       const next = nextSegment(car.segIdx, car.dir === 1);
       car.segIdx = next.segIdx; car.dir = next.dir; car.t = 0;
     }
-  });
+  }
   updateCarPositions();
 }
 
@@ -683,9 +739,11 @@ function removeRain() {
 function updateRain() {
   if (!rainSystem) return;
   const pos = rainSystem.geometry.attributes.position;
-  for (let i = 1; i < pos.count * 3; i += 3) {
-    pos.array[i] -= 0.8;
-    if (pos.array[i] < -80) pos.array[i] = 120;
+  const arr = pos.array;
+  const n = pos.count * 3;
+  for (let i = 1; i < n; i += 3) {
+    arr[i] -= 0.8;
+    if (arr[i] < -80) arr[i] = 120;
   }
   pos.needsUpdate = true;
 }
@@ -703,8 +761,8 @@ renderer.setAnimationLoop(() => {
       sun.position.set(Math.cos(flyT) * 200, sunY * 200, 60);
       const t = Math.max(0, sunY);
       const night = 1 - t;
-      renderer.setClearColor(new THREE.Color(night * 0.04, night * 0.04, night * 0.08 + t * 0.4));
-      scene.background = new THREE.Color(night * 0.04, night * 0.04, night * 0.08 + t * 0.4);
+      _bgColor.setRGB(night * 0.04, night * 0.04, night * 0.08 + t * 0.4);
+      scene.background = _bgColor;
       ambient.intensity = 0.1 + t * 0.9;
       sun.color.setRGB(1, 0.6 + t * 0.4, 0.3 + t * 0.7);
     }
