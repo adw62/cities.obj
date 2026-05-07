@@ -707,7 +707,7 @@ function loadModel(path) {
 
   if (currentObj) {
     scene.remove(currentObj);
-    currentObj.traverse(c => { if (c.isMesh) { c.geometry.dispose(); c.material.dispose(); } });
+    currentObj.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
     currentObj = null;
   }
   removeRain();
@@ -770,21 +770,48 @@ function buildMergedFromObj(obj) {
 function updateColors() {
   if (!currentObj) return;
   currentObj.traverse(c => {
-    if (!c.isMesh || !c.userData.colorKey) return;
+    if (!c.userData.colorKey || !c.material) return;
     c.material.color.copy(colorFor(c.userData.colorKey));
   });
 }
 
+// Wireframe via lazy-built EdgesGeometry + LineSegments.
+// Way cheaper than `material.wireframe = true`:
+//   - EdgesGeometry filters coplanar edges (cube → 12 lines, not 18+ triangle edges)
+//   - LineBasicMaterial is unlit — no per-fragment lighting
+//   - LineSegments uses gl.LINES directly, no triangle→line tessellation per draw
 function applyWireframe() {
   if (!currentObj) return;
   const isWire = mode === 'wireframe';
   const opacity = parseFloat(document.getElementById('wire-opacity').value);
-  currentObj.traverse(c => {
-    if (!c.isMesh || !c.userData.colorKey) return;
-    c.material.wireframe = isWire;
-    c.material.transparent = isWire;
-    c.material.opacity = isWire ? opacity : 1;
-  });
+  const meshes = [];
+  currentObj.traverse(c => { if (c.isMesh && c.userData.colorKey) meshes.push(c); });
+  for (const mesh of meshes) {
+    let lines = mesh.userData.wireLines;
+    if (isWire && !lines) {
+      const edges = new THREE.EdgesGeometry(mesh.geometry, 1);
+      const lmat = new THREE.LineBasicMaterial({
+        color: mesh.material.color.clone(),
+        transparent: opacity < 1,
+        opacity,
+      });
+      lines = new THREE.LineSegments(edges, lmat);
+      lines.userData.colorKey = mesh.userData.colorKey;
+      lines.position.copy(mesh.position);
+      lines.quaternion.copy(mesh.quaternion);
+      lines.scale.copy(mesh.scale);
+      mesh.userData.wireLines = lines;
+      mesh.parent.add(lines); // sibling, so hiding the mesh doesn't hide it
+    }
+    mesh.visible = !isWire;
+    if (lines) {
+      lines.visible = isWire;
+      if (isWire) {
+        lines.material.opacity = opacity;
+        lines.material.transparent = opacity < 1;
+      }
+    }
+  }
 }
 
 
@@ -1076,7 +1103,7 @@ document.getElementById('btn-generate').addEventListener('click', () => {
     if (currentObj) {
       removeCars();
       scene.remove(currentObj);
-      currentObj.traverse(c => { if (c.isMesh) { c.geometry.dispose(); c.material.dispose(); } });
+      currentObj.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
     }
 
     // Group raw geometry by color category — collapses hundreds of meshes to 3 draw calls
@@ -1120,6 +1147,7 @@ document.getElementById('btn-generate').addEventListener('click', () => {
 
     scene.add(group);
     currentObj = group;
+    applyWireframe();
     trafficData = null; adjacency = {};
     buildAdjacency(traffic); trafficData = traffic;
     if (carsEnabled) spawnCars();
