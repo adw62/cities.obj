@@ -548,6 +548,50 @@ function generateHighway(cfg,rng) {
   return [[['left_deck',leftDeck],['right_deck',rightDeck],...pillars.map((p,i)=>[`pillar_${String(i).padStart(3,'0')}`,p])],blvds];
 }
 
+// ── Traffic intersection splitting ────────────────────────────────────────────
+// Splits boulevard and street segments wherever they cross, so that every
+// junction gets a shared endpoint node that buildAdjacency can wire up.
+// Without this, streets and boulevards are independent full-length lines that
+// never share a point, so cars can never turn between road types.
+function splitAtIntersections(segs) {
+  function xsect(ax, az, bx, bz, cx, cz, dx, dz) {
+    const d1x=bx-ax, d1z=bz-az, d2x=dx-cx, d2z=dz-cz;
+    const cross=d1x*d2z - d1z*d2x;
+    if (Math.abs(cross) < 1e-10) return null;
+    const ex=cx-ax, ez=cz-az;
+    const t=(ex*d2z - ez*d2x)/cross;
+    const u=(ex*d1z - ez*d1x)/cross;
+    const eps=1e-6;
+    if (t>eps && t<1-eps && u>eps && u<1-eps) return {t, u};
+    return null;
+  }
+  const n=segs.length;
+  const tBuf=Array.from({length:n}, ()=>[]);
+  for (let i=0;i<n;i++) for (let j=i+1;j<n;j++) {
+    const si=segs[i], sj=segs[j];
+    const h=xsect(si.start[0],si.start[2],si.end[0],si.end[2],
+                  sj.start[0],sj.start[2],sj.end[0],sj.end[2]);
+    if (h) { tBuf[i].push(h.t); tBuf[j].push(h.u); }
+  }
+  const out=[];
+  for (let i=0;i<n;i++) {
+    const seg=segs[i], ts=tBuf[i];
+    if (!ts.length) { out.push(seg); continue; }
+    ts.sort((a,b)=>a-b);
+    let prevT=0, prevPt=seg.start;
+    for (const t of ts) {
+      if (t-prevT<1e-6) continue;
+      const pt=[seg.start[0]+(seg.end[0]-seg.start[0])*t,
+                seg.start[1]+(seg.end[1]-seg.start[1])*t,
+                seg.start[2]+(seg.end[2]-seg.start[2])*t];
+      out.push({start:prevPt, end:pt, type:seg.type});
+      prevPt=pt; prevT=t;
+    }
+    if (1-prevT>1e-6) out.push({start:prevPt, end:seg.end, type:seg.type});
+  }
+  return out;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 function generateCity(config) {
   const cfg={
@@ -630,6 +674,11 @@ function generateCity(config) {
   for (let bx=0;bx<nbx-1;bx++){const x=(ox+(bx+1)*px-cfg.street_width/2)*sc;trafficSegs.push({start:[x,ry,oz*sc],end:[x,ry,(oz+td)*sc],type:'street'});}
   for (let bz=0;bz<nbz-1;bz++){const z=(oz+(bz+1)*pz2-cfg.street_width/2)*sc;trafficSegs.push({start:[ox*sc,ry,z],end:[(ox+tw)*sc,ry,z],type:'street'});}
   for (let i=0;i<nSB;i++){const[x1,z1,x2,z2]=boulevards[i];trafficSegs.push({start:[x1*sc,ry,z1*sc],end:[x2*sc,ry,z2*sc],type:'boulevard'});}
+
+  // Split segments at boulevard/street crossings so junctions have shared nodes
+  const splitResult=splitAtIntersections(trafficSegs);
+  trafficSegs.length=0;
+  for (const s of splitResult) trafficSegs.push(s);
 
   // Surface warp
   const surface = cfg.surface || 'flat';
