@@ -296,6 +296,7 @@
   <button class="mode-btn" data-mode="daynight">Day/Night</button>
   <button class="mode-btn" data-mode="rain">Rain</button>
   <button class="mode-btn" data-mode="wireframe">Wireframe</button>
+  <button class="mode-btn" id="btn-fire">Fire!</button>
 
   <div id="music-controls">
     <button class="mode-btn" id="music-prev">&#9664;&#9664;</button>
@@ -699,6 +700,239 @@ function updateCars(dt) {
   carInstancedMesh.instanceMatrix.needsUpdate = true;
 }
 
+// ── Fire Event System ────────────────────────────────────────────────────────
+const FIRE_SPAWN_INTERVAL = 45;
+const FIRE_FIGHT_DURATION = 14;
+const FIRE_EXTINGUISH_TIME = 8;
+let _fireTimer = FIRE_SPAWN_INTERVAL * 0.35;
+let _fire = null;
+
+function _hsl(h, s, l) {
+  const c=(1-Math.abs(2*l-1))*s, x=c*(1-Math.abs((h*6)%2-1)), m=l-c/2;
+  let r=0,g=0,b=0;
+  if(h<1/6){r=c;g=x;}else if(h<2/6){r=x;g=c;}else if(h<3/6){g=c;b=x;}
+  else if(h<4/6){g=x;b=c;}else if(h<5/6){r=x;b=c;}else{r=c;b=x;}
+  return[r+m,g+m,b+m];
+}
+
+function _spawnFireEvent() {
+  if (!trafficData || !currentObj) return;
+  const segs = trafficData.segments;
+  if (!segs.length) return;
+  const sw = trafficData.street_width;
+
+  // Boulevards form a connected subgraph — restrict fire and truck to them so
+  // the truck can always navigate to the fire. Fall back to all segs if none exist.
+  const blvdIdx = segs.reduce((a,s,i)=>{ if(s.type==='boulevard') a.push(i); return a; }, []);
+  const pool = blvdIdx.length >= 2 ? blvdIdx : segs.map((_,i)=>i);
+
+  // Fire location: perpendicular offset from a boulevard segment into a building lot
+  const fireSegIdx = pool[Math.floor(Math.random() * pool.length)];
+  const seg = segs[fireSegIdx];
+  const mx=(seg.start[0]+seg.end[0])/2, my=(seg.start[1]+seg.end[1])/2, mz=(seg.start[2]+seg.end[2])/2;
+  const rdx=seg.end[0]-seg.start[0], rdz=seg.end[2]-seg.start[2];
+  const rl=Math.hypot(rdx,rdz)||1e-6;
+  const offDist=sw*(2.5+Math.random()*3), side=Math.random()<0.5?1:-1;
+  const fx=mx+(-rdz/rl)*offDist*side, fz=mz+(rdx/rl)*offDist*side;
+
+  // Probe actual building roof height at (fx, fz) via downward raycast
+  let fy = my + sw * 3.5; // fallback if no building hit
+  const testPt = new THREE.Vector3(fx, 0, fz);
+  currentObj.localToWorld(testPt);
+  const rc = new THREE.Raycaster(new THREE.Vector3(testPt.x, 9999, testPt.z), new THREE.Vector3(0,-1,0));
+  const buildMeshes = [];
+  currentObj.traverse(c => { if(c.isMesh && c.userData.colorKey==='building') buildMeshes.push(c); });
+  const hits = rc.intersectObjects(buildMeshes, false);
+  if (hits.length) {
+    // hits[0] is the topmost surface (smallest distance from ray origin high above)
+    const localHit = currentObj.worldToLocal(hits[0].point.clone());
+    fy = localHit.y + sw * 0.3;
+  }
+
+  // Truck spawns on a random boulevard segment too
+  const truckSegIdx = pool[Math.floor(Math.random() * pool.length)];
+
+  const NF=250, NS=150, NW=180;
+
+  // Fire particles
+  const fp=new Float32Array(NF*3), fc=new Float32Array(NF*3);
+  for(let i=0;i<NF;i++){
+    fp[i*3]=(Math.random()-.5)*sw*.8; fp[i*3+1]=Math.random()*sw*2; fp[i*3+2]=(Math.random()-.5)*sw*.8;
+    const[r,g,b]=_hsl(.03+Math.random()*.07,1,.45+Math.random()*.3);
+    fc[i*3]=r; fc[i*3+1]=g; fc[i*3+2]=b;
+  }
+  const fGeo=new THREE.BufferGeometry();
+  fGeo.setAttribute('position',new THREE.BufferAttribute(fp,3));
+  fGeo.setAttribute('color',new THREE.BufferAttribute(fc,3));
+  const firePts=new THREE.Points(fGeo,new THREE.PointsMaterial({size:.9,vertexColors:true,transparent:true,opacity:.95,depthWrite:false}));
+  firePts.position.set(fx,fy,fz);
+
+  // Smoke particles
+  const sp=new Float32Array(NS*3);
+  for(let i=0;i<NS;i++){
+    sp[i*3]=(Math.random()-.5)*sw*1.5; sp[i*3+1]=sw*1.5+Math.random()*sw*4; sp[i*3+2]=(Math.random()-.5)*sw*1.5;
+  }
+  const sGeo=new THREE.BufferGeometry();
+  sGeo.setAttribute('position',new THREE.BufferAttribute(sp,3));
+  const smokePts=new THREE.Points(sGeo,new THREE.PointsMaterial({color:0x445566,size:1.8,transparent:true,opacity:.35,depthWrite:false}));
+  smokePts.position.set(fx,fy,fz);
+
+  // Water particles (positions rebuilt each frame during fighting state)
+  const wc=new Float32Array(NW*3);
+  for(let i=0;i<NW;i++){wc[i*3]=.65+Math.random()*.35; wc[i*3+1]=.8+Math.random()*.2; wc[i*3+2]=1;}
+  const wGeo=new THREE.BufferGeometry();
+  wGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(NW*3),3));
+  wGeo.setAttribute('color',new THREE.BufferAttribute(wc,3));
+  const waterPts=new THREE.Points(wGeo,new THREE.PointsMaterial({size:.55,vertexColors:true,transparent:true,opacity:0,depthWrite:false}));
+
+  // Fire truck group (all positions in currentObj local / traffic coords)
+  const tl=sw*1.8, tw=sw*.6, th=sw*.72;
+  const truckGrp=new THREE.Group();
+  truckGrp.add(new THREE.Mesh(new THREE.BoxGeometry(tw,th,tl),new THREE.MeshLambertMaterial({color:0xcc2222})));
+  const cab=new THREE.Mesh(new THREE.BoxGeometry(tw*.85,th*.5,tl*.4),new THREE.MeshLambertMaterial({color:0xaa1111}));
+  cab.position.set(0,th*.5+th*.25,tl*.28); truckGrp.add(cab);
+  const lightBarMat=new THREE.MeshLambertMaterial({color:0xff0000,emissive:0xff0000,emissiveIntensity:2});
+  const lightBar=new THREE.Mesh(new THREE.BoxGeometry(tw*.7,th*.22,tl*.38),lightBarMat);
+  lightBar.position.y=th*.5+th*.11; truckGrp.add(lightBar);
+  truckGrp.position.set(0,-9999,0);
+
+  currentObj.add(firePts);
+  currentObj.add(smokePts);
+  currentObj.add(waterPts);
+  currentObj.add(truckGrp);
+
+  _fire={
+    state:'responding', fx,fy,fz,
+    firePts,smokePts,waterPts,truckGrp,lightBar,lightBarMat,
+    lightTimer:0,lightPhase:0,
+    fightTimer:0,extTimer:0,
+    fireIntensity:1,smokeIntensity:1,
+    segIdx:truckSegIdx,
+    dir:Math.random()<.5?1:-1, t:Math.random(),
+  };
+}
+
+function _fireSmartNext(curIdx, arrivedAtEnd, fx, fz) {
+  const seg=trafficData.segments[curIdx];
+  const key=arrivedAtEnd?seg._ek:seg._sk;
+  const opts=adjacency[key];
+  if(!opts) return {segIdx:curIdx,dir:arrivedAtEnd?-1:1};
+  const cands=opts.filter(o=>o.segIdx!==curIdx);
+  if(!cands.length) return {segIdx:curIdx,dir:arrivedAtEnd?-1:1};
+  // Prefer boulevard branches to stay on the connected subgraph
+  const blvd=cands.filter(o=>trafficData.segments[o.segIdx].type==='boulevard');
+  const search=blvd.length?blvd:cands;
+  let best=search[0],bestD=Infinity;
+  for(const opt of search){
+    const ns=trafficData.segments[opt.segIdx];
+    const ep=opt.dir===1?ns.end:ns.start;
+    const d=Math.hypot(ep[0]-fx,ep[2]-fz);
+    if(d<bestD){bestD=d;best=opt;}
+  }
+  return best;
+}
+
+function _removeFire() {
+  if(!_fire) return;
+  const f=_fire;
+  for(const pts of[f.firePts,f.smokePts,f.waterPts]){
+    if(pts.parent) pts.parent.remove(pts);
+    pts.geometry.dispose(); pts.material.dispose();
+  }
+  if(f.truckGrp.parent) f.truckGrp.parent.remove(f.truckGrp);
+  f.truckGrp.traverse(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});
+  _fire=null;
+  _fireTimer=FIRE_SPAWN_INTERVAL;
+}
+
+function _tickFire(dt) {
+  if(!_fire){
+    if(!trafficData||!currentObj) return;
+    _fireTimer-=dt;
+    if(_fireTimer<=0) _spawnFireEvent();
+    return;
+  }
+  const f=_fire;
+  const sw=trafficData.street_width;
+
+  // Strobe lights red/blue
+  f.lightTimer+=dt;
+  if(f.lightTimer>.22){
+    f.lightTimer=0; f.lightPhase=(f.lightPhase+1)%4;
+    const cols=[0xff2200,0x1133ff,0xff4400,0x0022ee];
+    f.lightBarMat.color.setHex(cols[f.lightPhase]);
+    f.lightBarMat.emissive.setHex(cols[f.lightPhase]);
+  }
+
+  // Animate fire particles: rise, flicker, reset when too high
+  if(f.fireIntensity>0){
+    const fi=f.fireIntensity, pa=f.firePts.geometry.attributes.position.array, n=pa.length/3;
+    for(let i=0;i<n;i++){
+      pa[i*3+1]+=(0.7+Math.random()*.9)*sw*1.6*dt*fi;
+      pa[i*3]+=(Math.random()-.5)*sw*dt*fi*1.2;
+      pa[i*3+2]+=(Math.random()-.5)*sw*dt*fi*1.2;
+      if(pa[i*3+1]>sw*3.5*fi||Math.random()<.025){
+        pa[i*3]=(Math.random()-.5)*sw*.8; pa[i*3+1]=0; pa[i*3+2]=(Math.random()-.5)*sw*.8;
+      }
+    }
+    f.firePts.geometry.attributes.position.needsUpdate=true;
+    f.firePts.material.opacity=.9*f.fireIntensity;
+  }
+
+  // Animate smoke: slower rise, horizontal drift
+  if(f.smokeIntensity>0){
+    const sa=f.smokePts.geometry.attributes.position.array, sn=sa.length/3;
+    for(let i=0;i<sn;i++){
+      sa[i*3+1]+=(0.3+Math.random()*.3)*sw*dt;
+      sa[i*3]+=(Math.random()-.5)*sw*.5*dt;
+      sa[i*3+2]+=(Math.random()-.5)*sw*.5*dt;
+      if(sa[i*3+1]>sw*8||Math.random()<.008){
+        sa[i*3]=(Math.random()-.5)*sw*1.5; sa[i*3+1]=sw*1.5; sa[i*3+2]=(Math.random()-.5)*sw*1.5;
+      }
+    }
+    f.smokePts.geometry.attributes.position.needsUpdate=true;
+    f.smokePts.material.opacity=.35*f.smokeIntensity;
+  }
+
+  if(f.state==='responding'){
+    // Drive truck toward fire using greedy road-graph navigation
+    const segs=trafficData.segments;
+    let seg=segs[f.segIdx];
+    if(seg._len>0) f.t+=(CAR_SPEED*2.2*dt)/seg._len;
+    if(f.t>=1){
+      const next=_fireSmartNext(f.segIdx,f.dir===1,f.fx,f.fz);
+      f.segIdx=next.segIdx; f.dir=next.dir; f.t=0;
+      seg=segs[f.segIdx];
+    }
+    const s=f.dir===1?seg.start:seg.end, e=f.dir===1?seg.end:seg.start, ct=f.t;
+    const tx=s[0]+(e[0]-s[0])*ct, ty=s[1]+(e[1]-s[1])*ct+sw*.3, tz=s[2]+(e[2]-s[2])*ct;
+    f.truckGrp.position.set(tx,ty,tz);
+    f.truckGrp.rotation.y=Math.atan2(e[0]-s[0],e[2]-s[2]);
+    if(Math.hypot(tx-f.fx,tz-f.fz)<sw*4){ f.state='fighting'; f.fightTimer=0; f.waterPts.material.opacity=.82; }
+
+  }else if(f.state==='fighting'){
+    f.fightTimer+=dt;
+    // Water arc: parabolic spray from truck to fire
+    const tp=f.truckGrp.position;
+    const wdx=f.fx-tp.x, wdz=f.fz-tp.z, wd=Math.hypot(wdx,wdz)||sw;
+    const wpa=f.waterPts.geometry.attributes.position.array, wn=wpa.length/3;
+    for(let i=0;i<wn;i++){
+      const t=Math.random();
+      wpa[i*3]  =tp.x+wdx*t+(Math.random()-.5)*sw*.25;
+      wpa[i*3+1]=tp.y+Math.sin(t*Math.PI)*wd*.55+(Math.random()-.5)*sw*.15;
+      wpa[i*3+2]=tp.z+wdz*t+(Math.random()-.5)*sw*.25;
+    }
+    f.waterPts.geometry.attributes.position.needsUpdate=true;
+    f.fireIntensity=Math.max(0,1-f.fightTimer/FIRE_FIGHT_DURATION);
+    if(f.fightTimer>=FIRE_FIGHT_DURATION){ f.state='extinguishing'; f.extTimer=0; f.waterPts.material.opacity=0; }
+
+  }else if(f.state==='extinguishing'){
+    f.extTimer+=dt;
+    f.smokeIntensity=Math.max(0,1-f.extTimer/FIRE_EXTINGUISH_TIME);
+    if(f.extTimer>FIRE_EXTINGUISH_TIME) _removeFire();
+  }
+}
+
 // ── OBJ Loader ────────────────────────────────────────────
 const loader = new OBJLoader();
 
@@ -711,6 +945,7 @@ function loadModel(path) {
     currentObj = null;
   }
   removeRain();
+  _removeFire();
 
   loader.load(path, (obj) => {
     const box = new THREE.Box3().setFromObject(obj);
@@ -871,6 +1106,7 @@ renderer.setAnimationLoop(() => {
   controls.update();
 
   if (carsEnabled) updateCars(dt);
+  _tickFire(dt);
   renderer.render(scene, camera);
 });
 
@@ -946,6 +1182,10 @@ document.getElementById('wire-opacity').addEventListener('input', () => {
   if (mode === 'wireframe') applyWireframe();
 });
 
+
+document.getElementById('btn-fire').addEventListener('click', () => {
+  if (!_fire) _spawnFireEvent();
+});
 
 document.getElementById('btn-cars').addEventListener('click', () => {
   carsEnabled = !carsEnabled;
@@ -1101,6 +1341,7 @@ document.getElementById('btn-generate').addEventListener('click', () => {
 
     // Build Three.js group from typed arrays
     if (currentObj) {
+      _removeFire();
       removeCars();
       scene.remove(currentObj);
       currentObj.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
