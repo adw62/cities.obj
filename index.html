@@ -1062,6 +1062,19 @@ function _torTangentFrame(nx, ny, nz) {
   rx/=rl; ry/=rl; rz/=rl;
   return [rx, ry, rz, ny*rz-nz*ry, nz*rx-nx*rz, nx*ry-ny*rx]; // [right, forward]
 }
+function _torParticleColor(a, i) {
+  const ci = i * 3;
+  if (Math.random() < 0.22) {          // brown/grey highlight
+    a[ci]   = 0.25 + Math.random() * 0.35;
+    a[ci+1] = 0.18 + Math.random() * 0.26;
+    a[ci+2] = 0.12 + Math.random() * 0.20;
+  } else {                              // white / light grey
+    const v = 0.70 + Math.random() * 0.30;
+    a[ci]   = v;
+    a[ci+1] = v * (0.90 + Math.random() * 0.10);
+    a[ci+2] = v * (0.83 + Math.random() * 0.14);
+  }
+}
 function _torProjectToSurface(tor) {
   const surf = trafficData ? (trafficData.surface || 'flat') : 'flat';
   if (surf === 'sphere' || surf === 'hemisphere') {
@@ -1118,11 +1131,7 @@ function _spawnTornadoEvent() {
     pHeights[i] = Math.random() * coneH;
     pAngles[i]  = Math.random() * Math.PI * 2;
     pRadii[i]   = 0.84 + Math.random() * 0.16; // ring near outer edge — eye is hollow
-    // colour: dark brown/grey at base, lighter grey at top
-    const t = pHeights[i] / coneH;
-    pCol[i*3]   = 0.32 + t * 0.25;
-    pCol[i*3+1] = 0.25 + t * 0.20;
-    pCol[i*3+2] = 0.18 + t * 0.28;
+    _torParticleColor(pCol, i);
   }
 
   const pGeo = new THREE.BufferGeometry();
@@ -1212,12 +1221,14 @@ function _tickTornado(dt) {
 
   // Animate funnel particles: rise along surface normal, ring in tangent plane
   const ppa = tor.pts.geometry.attributes.position.array;
+  const cpa = tor.pts.geometry.attributes.color.array;
   const riseSpeed = sw * 7;
   for (let i = 0; i < tor.NP; i++) {
     tor.pHeights[i] += dt * riseSpeed;
     if (tor.pHeights[i] > tor.coneH * intensity) {
       tor.pHeights[i] = 0;
       tor.pAngles[i] = Math.random() * Math.PI * 2;
+      _torParticleColor(cpa, i);
     }
     const h = tor.pHeights[i];
     const frac = h / tor.coneH;
@@ -1231,6 +1242,7 @@ function _tickTornado(dt) {
     ppa[i*3+2] = tor.z + rz*ca*r + fz_*sa*r + nz*h;
   }
   tor.pts.geometry.attributes.position.needsUpdate = true;
+  tor.pts.geometry.attributes.color.needsUpdate = true;
 
   if (!carInstancedMesh) return;
 
