@@ -715,8 +715,8 @@ function updateCars(dt) {
     }
 
     // speed: brake for car ahead, otherwise accelerate to baseSpeed
-    const targetSpeed = minFollowWorld <= minGapDist ? 0
-      : minFollowWorld < followDist ? car.baseSpeed * (minFollowWorld - minGapDist) / followRange
+    const targetSpeed = minFollowWorld <= minGapDist ? car.baseSpeed * 0.5
+      : minFollowWorld < followDist ? car.baseSpeed * (0.5 + 0.5 * (minFollowWorld - minGapDist) / followRange)
       : car.baseSpeed;
     const rate = targetSpeed < car.currentSpeed ? BRAKE_RATE : ACCEL_RATE;
     const sLerp = rate * dt; car.currentSpeed += (targetSpeed - car.currentSpeed) * (sLerp < 1 ? sLerp : 1);
