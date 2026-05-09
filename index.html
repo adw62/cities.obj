@@ -296,6 +296,9 @@
   <button class="mode-btn" data-mode="daynight">Day/Night</button>
   <button class="mode-btn" data-mode="rain">Rain</button>
   <button class="mode-btn" data-mode="wireframe">Wireframe</button>
+  <button class="mode-btn" id="btn-fire">Fire!</button>
+  <button class="mode-btn" id="btn-ufo">UFO!</button>
+  <button class="mode-btn" id="btn-tornado">Tornado!</button>
 
   <div id="music-controls">
     <button class="mode-btn" id="music-prev">&#9664;&#9664;</button>
@@ -441,7 +444,7 @@ const CLEAR_SW    = 1.5; // lateral clear distance post-pass in street-width uni
 // pre-allocated temporaries — avoid per-frame GC
 const _carFwd = new THREE.Vector3(), _carNorm = new THREE.Vector3(),
       _carRight = new THREE.Vector3(), _carUp = new THREE.Vector3(),
-      _carM4 = new THREE.Matrix4();
+      _carM4 = new THREE.Matrix4(), _torM4 = new THREE.Matrix4();
 const _segBuckets = new Map(); // reused each frame — O(N) neighbour scan
 
 function ptKey(x, y, z, tol) {
@@ -463,8 +466,45 @@ function loadTrafficJSON(modelPath) {
     .catch(() => {});
 }
 
+function splitTrafficSegments(segs) {
+  function xsect(ax, az, bx, bz, cx, cz, dx, dz) {
+    const d1x=bx-ax, d1z=bz-az, d2x=dx-cx, d2z=dz-cz;
+    const cross=d1x*d2z - d1z*d2x;
+    if (Math.abs(cross) < 1e-10) return null;
+    const ex=cx-ax, ez=cz-az;
+    const t=(ex*d2z - ez*d2x)/cross, u=(ex*d1z - ez*d1x)/cross;
+    const eps=1e-6;
+    return (t>eps && t<1-eps && u>eps && u<1-eps) ? {t, u} : null;
+  }
+  const n=segs.length, tBuf=Array.from({length:n}, ()=>[]);
+  for (let i=0;i<n;i++) for (let j=i+1;j<n;j++) {
+    const si=segs[i], sj=segs[j];
+    const h=xsect(si.start[0],si.start[2],si.end[0],si.end[2],
+                  sj.start[0],sj.start[2],sj.end[0],sj.end[2]);
+    if (h) { tBuf[i].push(h.t); tBuf[j].push(h.u); }
+  }
+  const out=[];
+  for (let i=0;i<n;i++) {
+    const seg=segs[i], ts=tBuf[i];
+    if (!ts.length) { out.push(seg); continue; }
+    ts.sort((a,b)=>a-b);
+    let prevT=0, prevPt=seg.start;
+    for (const t of ts) {
+      if (t-prevT<1e-6) continue;
+      const pt=[seg.start[0]+(seg.end[0]-seg.start[0])*t,
+                seg.start[1]+(seg.end[1]-seg.start[1])*t,
+                seg.start[2]+(seg.end[2]-seg.start[2])*t];
+      out.push({start:prevPt, end:pt, type:seg.type});
+      prevPt=pt; prevT=t;
+    }
+    if (1-prevT>1e-6) out.push({start:prevPt, end:seg.end, type:seg.type});
+  }
+  return out;
+}
+
 function buildAdjacency(data) {
   adjacency = {};
+  data.segments = splitTrafficSegments(data.segments);
   const tol = data.street_width * 0.1;
   const segs = data.segments;
   for (let i = 0; i < segs.length; i++) {
@@ -490,6 +530,46 @@ function nextSegment(curIdx, arrivedAtEnd) {
   let count = 0;
   for (let i = 0; i < opts.length; i++) if (opts[i].segIdx !== curIdx) count++;
   if (!count) return { segIdx: curIdx, dir: arrivedAtEnd ? -1 : 1 };
+
+  // Streets: 30% chance to turn onto a boulevard when one is available at this junction
+  if (seg.type === 'street' && count > 1) {
+    const blvdCands = [];
+    for (let i = 0; i < opts.length; i++)
+      if (opts[i].segIdx !== curIdx && trafficData.segments[opts[i].segIdx].type === 'boulevard')
+        blvdCands.push(opts[i]);
+    if (blvdCands.length && Math.random() < 0.5)
+      return blvdCands[Math.floor(Math.random() * blvdCands.length)];
+  }
+
+  // Boulevards: 75% chance to stay on boulevard rather than turning onto a street
+  if (seg.type === 'boulevard' && count > 1) {
+    const blvdCands = [];
+    for (let i = 0; i < opts.length; i++)
+      if (opts[i].segIdx !== curIdx && trafficData.segments[opts[i].segIdx].type === 'boulevard')
+        blvdCands.push(opts[i]);
+    if (blvdCands.length && Math.random() < 0.75)
+      return blvdCands[Math.floor(Math.random() * blvdCands.length)];
+  }
+
+  // Streets: 80% bias toward continuing straight (highest dot product with current heading)
+  if (seg.type === 'street' && count > 1 && Math.random() < 0.8) {
+    const sd = arrivedAtEnd ? 1 : -1;
+    const cdx = sd * (seg.end[0] - seg.start[0]);
+    const cdz = sd * (seg.end[2] - seg.start[2]);
+    const cl = Math.hypot(cdx, cdz) || 1;
+    let bestDot = -Infinity, bestOpt = null;
+    for (let i = 0; i < opts.length; i++) {
+      const opt = opts[i];
+      if (opt.segIdx === curIdx) continue;
+      const ns = trafficData.segments[opt.segIdx];
+      const ndx = opt.dir * (ns.end[0] - ns.start[0]);
+      const ndz = opt.dir * (ns.end[2] - ns.start[2]);
+      const dot = (cdx * ndx + cdz * ndz) / (cl * (Math.hypot(ndx, ndz) || 1));
+      if (dot > bestDot) { bestDot = dot; bestOpt = opt; }
+    }
+    if (bestOpt && bestDot > 0.5) return bestOpt;
+  }
+
   let pick = Math.floor(Math.random() * count);
   for (let i = 0; i < opts.length; i++) {
     if (opts[i].segIdx !== curIdx && pick-- === 0) return opts[i];
@@ -566,10 +646,11 @@ function updateCars(dt) {
   const m = _carM4;
   const ela = m.elements;
 
-  // bucket cars by segment (reuse arrays — no GC churn)
+  // bucket cars by segment (reuse arrays — no GC churn); skip tornado-captured cars
   for (const b of _segBuckets.values()) b.length = 0;
   for (let i = 0; i < carData.length; i++) {
     const car = carData[i];
+    if (car.tornadoState) continue;
     let b = _segBuckets.get(car.segIdx);
     if (!b) { b = []; _segBuckets.set(car.segIdx, b); }
     b.push(car);
@@ -577,6 +658,7 @@ function updateCars(dt) {
 
   for (let i = 0; i < carData.length; i++) {
     const car = carData[i];
+    if (car.tornadoState) continue; // tornado tick owns this car's matrix
     let seg = segs[car.segIdx];
     const isBlvd = seg.type === 'boulevard';
     const segLen = seg._len;
@@ -699,6 +781,776 @@ function updateCars(dt) {
   carInstancedMesh.instanceMatrix.needsUpdate = true;
 }
 
+// ── Fire Event System ────────────────────────────────────────────────────────
+const FIRE_SPAWN_INTERVAL = 600;
+const FIRE_FIGHT_DURATION = 14;
+const FIRE_EXTINGUISH_TIME = 8;
+let _fireTimer = FIRE_SPAWN_INTERVAL;
+let _fire = null;
+
+function _hsl(h, s, l) {
+  const c=(1-Math.abs(2*l-1))*s, x=c*(1-Math.abs((h*6)%2-1)), m=l-c/2;
+  let r=0,g=0,b=0;
+  if(h<1/6){r=c;g=x;}else if(h<2/6){r=x;g=c;}else if(h<3/6){g=c;b=x;}
+  else if(h<4/6){g=x;b=c;}else if(h<5/6){r=x;b=c;}else{r=c;b=x;}
+  return[r+m,g+m,b+m];
+}
+
+function _spawnFireEvent() {
+  if (!trafficData || !currentObj) return;
+  const segs = trafficData.segments;
+  if (!segs.length) return;
+  const sw = trafficData.street_width;
+
+  // Fire location: perpendicular offset from a random road segment into a building lot
+  const fireSegIdx = Math.floor(Math.random() * segs.length);
+  const seg = segs[fireSegIdx];
+  const mx=(seg.start[0]+seg.end[0])/2, my=(seg.start[1]+seg.end[1])/2, mz=(seg.start[2]+seg.end[2])/2;
+  const rdx=seg.end[0]-seg.start[0], rdz=seg.end[2]-seg.start[2];
+  const rl=Math.hypot(rdx,rdz)||1e-6;
+  const offDist=sw*(2.5+Math.random()*3), side=Math.random()<0.5?1:-1;
+  const fx=mx+(-rdz/rl)*offDist*side, fz=mz+(rdx/rl)*offDist*side;
+
+  // Probe actual building roof height at (fx, fz) via downward raycast
+  let fy = my + sw * 2; // fallback: ~2 street-widths above road if no building hit
+  currentObj.updateMatrixWorld(true);
+  const testPt = new THREE.Vector3(fx, 0, fz);
+  currentObj.localToWorld(testPt);
+  const rc = new THREE.Raycaster(new THREE.Vector3(testPt.x, 9999, testPt.z), new THREE.Vector3(0,-1,0));
+  const buildMeshes = [];
+  currentObj.traverse(c => { if(c.isMesh && c.userData.colorKey==='building') buildMeshes.push(c); });
+  const hits = rc.intersectObjects(buildMeshes, false);
+  if (hits.length) {
+    const localHit = currentObj.worldToLocal(hits[0].point.clone());
+    fy = localHit.y + sw * 0.3;
+  }
+
+  const truckSegIdx = Math.floor(Math.random() * segs.length);
+
+  const NF=250, NS=150, NW=180;
+
+  // Fire particles
+  const fp=new Float32Array(NF*3), fc=new Float32Array(NF*3);
+  for(let i=0;i<NF;i++){
+    fp[i*3]=(Math.random()-.5)*sw*.8; fp[i*3+1]=Math.random()*sw*2; fp[i*3+2]=(Math.random()-.5)*sw*.8;
+    const[r,g,b]=_hsl(.03+Math.random()*.07,1,.45+Math.random()*.3);
+    fc[i*3]=r; fc[i*3+1]=g; fc[i*3+2]=b;
+  }
+  const fGeo=new THREE.BufferGeometry();
+  fGeo.setAttribute('position',new THREE.BufferAttribute(fp,3));
+  fGeo.setAttribute('color',new THREE.BufferAttribute(fc,3));
+  const firePts=new THREE.Points(fGeo,new THREE.PointsMaterial({size:.9,vertexColors:true,transparent:true,opacity:.95,depthWrite:false}));
+  firePts.position.set(fx,fy,fz);
+
+  // Smoke particles
+  const sp=new Float32Array(NS*3);
+  for(let i=0;i<NS;i++){
+    sp[i*3]=(Math.random()-.5)*sw*1.5; sp[i*3+1]=Math.random()*sw*3; sp[i*3+2]=(Math.random()-.5)*sw*1.5;
+  }
+  const sGeo=new THREE.BufferGeometry();
+  sGeo.setAttribute('position',new THREE.BufferAttribute(sp,3));
+  const smokePts=new THREE.Points(sGeo,new THREE.PointsMaterial({color:0x445566,size:1.8,transparent:true,opacity:.15,depthWrite:false}));
+  smokePts.position.set(fx,fy,fz);
+
+  // Water particles (positions rebuilt each frame during fighting state)
+  const wc=new Float32Array(NW*3);
+  for(let i=0;i<NW;i++){wc[i*3]=.65+Math.random()*.35; wc[i*3+1]=.8+Math.random()*.2; wc[i*3+2]=1;}
+  const wGeo=new THREE.BufferGeometry();
+  wGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(NW*3),3));
+  wGeo.setAttribute('color',new THREE.BufferAttribute(wc,3));
+  const waterPts=new THREE.Points(wGeo,new THREE.PointsMaterial({size:.55,vertexColors:true,transparent:true,opacity:0,depthWrite:false}));
+
+  // Fire truck group (all positions in currentObj local / traffic coords)
+  const tl=sw*1.8, tw=sw*.6, th=sw*.72;
+  const truckGrp=new THREE.Group();
+  truckGrp.add(new THREE.Mesh(new THREE.BoxGeometry(tw,th,tl),new THREE.MeshLambertMaterial({color:0xcc2222})));
+  const cab=new THREE.Mesh(new THREE.BoxGeometry(tw*.85,th*.5,tl*.4),new THREE.MeshLambertMaterial({color:0xaa1111}));
+  cab.position.set(0,th*.5+th*.25,tl*.28); truckGrp.add(cab);
+  const lightBarMat=new THREE.MeshLambertMaterial({color:0xff0000,emissive:0xff0000,emissiveIntensity:2});
+  const lightBar=new THREE.Mesh(new THREE.BoxGeometry(tw*.7,th*.22,tl*.38),lightBarMat);
+  lightBar.position.y=th*.5+th*.11; truckGrp.add(lightBar);
+  truckGrp.matrixAutoUpdate = false;
+  truckGrp.matrix.elements[13] = -9999;
+
+  currentObj.add(firePts);
+  currentObj.add(smokePts);
+  currentObj.add(waterPts);
+  currentObj.add(truckGrp);
+
+  _fire={
+    state:'responding', fx,fy,fz, fyRoad:my,
+    firePts,smokePts,waterPts,truckGrp,lightBar,lightBarMat,
+    lightTimer:0,lightPhase:0,
+    fightTimer:0,extTimer:0,
+    fireIntensity:1,smokeIntensity:1,
+    segIdx:truckSegIdx,
+    dir:Math.random()<.5?1:-1, t:Math.random(),
+  };
+}
+
+function _fireSmartNext(curIdx, arrivedAtEnd, fx, fy, fz) {
+  const seg=trafficData.segments[curIdx];
+  const key=arrivedAtEnd?seg._ek:seg._sk;
+  const opts=adjacency[key];
+  if(!opts) return {segIdx:curIdx,dir:arrivedAtEnd?-1:1};
+  const cands=opts.filter(o=>o.segIdx!==curIdx);
+  if(!cands.length) return {segIdx:curIdx,dir:arrivedAtEnd?-1:1};
+  let best=cands[0],bestD=Infinity;
+  for(const opt of cands){
+    const ns=trafficData.segments[opt.segIdx];
+    const ep=opt.dir===1?ns.end:ns.start;
+    const d=Math.hypot(ep[0]-fx, ep[1]-fy, ep[2]-fz);
+    if(d<bestD){bestD=d;best=opt;}
+  }
+  return best;
+}
+
+function _removeFire() {
+  if(!_fire) return;
+  const f=_fire;
+  for(const pts of[f.firePts,f.smokePts,f.waterPts]){
+    if(pts.parent) pts.parent.remove(pts);
+    pts.geometry.dispose(); pts.material.dispose();
+  }
+  if(f.truckGrp.parent) f.truckGrp.parent.remove(f.truckGrp);
+  f.truckGrp.traverse(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});
+  _fire=null;
+  _fireTimer=FIRE_SPAWN_INTERVAL;
+}
+
+function _tickFire(dt) {
+  if(!_fire){
+    if(!trafficData||!currentObj) return;
+    _fireTimer-=dt;
+    if(_fireTimer<=0) _spawnFireEvent();
+    return;
+  }
+  const f=_fire;
+  const sw=trafficData.street_width;
+
+  // Strobe lights red/blue
+  f.lightTimer+=dt;
+  if(f.lightTimer>.22){
+    f.lightTimer=0; f.lightPhase=(f.lightPhase+1)%4;
+    const cols=[0xff2200,0x1133ff,0xff4400,0x0022ee];
+    f.lightBarMat.color.setHex(cols[f.lightPhase]);
+    f.lightBarMat.emissive.setHex(cols[f.lightPhase]);
+  }
+
+  // Animate fire particles: rise, flicker, reset when too high
+  if(f.fireIntensity>0){
+    const fi=f.fireIntensity, pa=f.firePts.geometry.attributes.position.array, n=pa.length/3;
+    for(let i=0;i<n;i++){
+      pa[i*3+1]+=(0.7+Math.random()*.9)*sw*1.6*dt*fi;
+      pa[i*3]+=(Math.random()-.5)*sw*dt*fi*1.2;
+      pa[i*3+2]+=(Math.random()-.5)*sw*dt*fi*1.2;
+      if(pa[i*3+1]>sw*3.5*fi||Math.random()<.025){
+        pa[i*3]=(Math.random()-.5)*sw*.8; pa[i*3+1]=0; pa[i*3+2]=(Math.random()-.5)*sw*.8;
+      }
+    }
+    f.firePts.geometry.attributes.position.needsUpdate=true;
+    f.firePts.material.opacity=.9*f.fireIntensity;
+  }
+
+  // Animate smoke: slower rise, horizontal drift
+  if(f.smokeIntensity>0){
+    const sa=f.smokePts.geometry.attributes.position.array, sn=sa.length/3;
+    for(let i=0;i<sn;i++){
+      sa[i*3+1]+=(0.3+Math.random()*.3)*sw*dt;
+      sa[i*3]+=(Math.random()-.5)*sw*.5*dt;
+      sa[i*3+2]+=(Math.random()-.5)*sw*.5*dt;
+      if(sa[i*3+1]>sw*1||Math.random()<.008){
+        sa[i*3]=(Math.random()-.5)*sw*1.5; sa[i*3+1]=0; sa[i*3+2]=(Math.random()-.5)*sw*1.5;
+      }
+    }
+    f.smokePts.geometry.attributes.position.needsUpdate=true;
+    f.smokePts.material.opacity=.15*f.smokeIntensity;
+  }
+
+  if(f.state==='responding'){
+    // Drive truck toward fire using greedy road-graph navigation
+    const segs=trafficData.segments;
+    let seg=segs[f.segIdx];
+    if(seg._len>0) f.t+=(CAR_SPEED*2.2*dt)/seg._len;
+    if(f.t>=1){
+      const next=_fireSmartNext(f.segIdx,f.dir===1,f.fx,f.fyRoad,f.fz);
+      f.segIdx=next.segIdx; f.dir=next.dir; f.t=0;
+      seg=segs[f.segIdx];
+    }
+    const s=f.dir===1?seg.start:seg.end, e=f.dir===1?seg.end:seg.start, ct=f.t;
+    const tx=s[0]+(e[0]-s[0])*ct, tby=s[1]+(e[1]-s[1])*ct, tz=s[2]+(e[2]-s[2])*ct;
+    const dx=e[0]-s[0], dy=e[1]-s[1], dz=e[2]-s[2];
+    const lift=sw*.3, surf=trafficData.surface||'flat';
+    const ela=f.truckGrp.matrix.elements;
+    if(surf!=='flat'&&(dx||dy||dz)){
+      let nx,ny,nz;
+      if(surf==='sphere'||surf==='hemisphere'){
+        const nl=Math.sqrt(tx*tx+tby*tby+tz*tz)||1e-9;
+        nx=tx/nl; ny=tby/nl; nz=tz/nl;
+      }else{
+        const xzl=Math.sqrt(tx*tx+tz*tz)||1e-9, k=(trafficData.torus_major_sc||0)/xzl;
+        const ux=tx*(1-k),uy=tby,uz=tz*(1-k),ul=Math.sqrt(ux*ux+uy*uy+uz*uz)||1e-9;
+        nx=ux/ul; ny=uy/ul; nz=uz/ul;
+      }
+      const fl=Math.sqrt(dx*dx+dy*dy+dz*dz)||1e-9, fx_=dx/fl,fy_=dy/fl,fz_=dz/fl;
+      let rx=ny*fz_-nz*fy_, ry=nz*fx_-nx*fz_, rz=nx*fy_-ny*fx_;
+      const rl=Math.sqrt(rx*rx+ry*ry+rz*rz)||1e-9; rx/=rl; ry/=rl; rz/=rl;
+      const upx=fy_*rz-fz_*ry, upy=fz_*rx-fx_*rz, upz=fx_*ry-fy_*rx;
+      ela[0]=rx;  ela[1]=ry;  ela[2]=rz;  ela[3]=0;
+      ela[4]=upx; ela[5]=upy; ela[6]=upz; ela[7]=0;
+      ela[8]=fx_; ela[9]=fy_; ela[10]=fz_;ela[11]=0;
+      ela[12]=tx+nx*lift; ela[13]=tby+ny*lift; ela[14]=tz+nz*lift; ela[15]=1;
+    }else{
+      const xzl=Math.sqrt(dx*dx+dz*dz),inv=xzl>0?1/xzl:0;
+      const cs=dz*inv, sn=dx*inv;
+      ela[0]=cs; ela[1]=0; ela[2]=-sn; ela[3]=0;
+      ela[4]=0;  ela[5]=1; ela[6]=0;   ela[7]=0;
+      ela[8]=sn; ela[9]=0; ela[10]=cs; ela[11]=0;
+      ela[12]=tx; ela[13]=tby+lift; ela[14]=tz; ela[15]=1;
+    }
+    f.truckGrp.matrixWorldNeedsUpdate=true;
+    if(Math.hypot(tx-f.fx, tby-f.fyRoad, tz-f.fz)<sw*4){ f.state='fighting'; f.fightTimer=0; f.waterPts.material.opacity=.82; }
+
+  }else if(f.state==='fighting'){
+    f.fightTimer+=dt;
+    // Water arc: parabolic spray from truck to fire
+    const tela=f.truckGrp.matrix.elements;
+    const tp={x:tela[12],y:tela[13],z:tela[14]};
+    const wdx=f.fx-tp.x, wdz=f.fz-tp.z, wd=Math.hypot(wdx,wdz)||sw;
+    const wpa=f.waterPts.geometry.attributes.position.array, wn=wpa.length/3;
+    for(let i=0;i<wn;i++){
+      const t=Math.random();
+      wpa[i*3]  =tp.x+wdx*t+(Math.random()-.5)*sw*.25;
+      wpa[i*3+1]=tp.y+(f.fy-tp.y)*t+Math.sin(t*Math.PI)*wd*.55+(Math.random()-.5)*sw*.15;
+      wpa[i*3+2]=tp.z+wdz*t+(Math.random()-.5)*sw*.25;
+    }
+    f.waterPts.geometry.attributes.position.needsUpdate=true;
+    f.fireIntensity=Math.max(0,1-f.fightTimer/FIRE_FIGHT_DURATION);
+    if(f.fightTimer>=FIRE_FIGHT_DURATION){ f.state='extinguishing'; f.extTimer=0; f.waterPts.material.opacity=0; }
+
+  }else if(f.state==='extinguishing'){
+    f.extTimer+=dt;
+    f.smokeIntensity=Math.max(0,1-f.extTimer/FIRE_EXTINGUISH_TIME);
+    if(f.extTimer>FIRE_EXTINGUISH_TIME) _removeFire();
+  }
+}
+
+// Surface normal + tangent frame helpers shared by tornado logic
+function _torSurfNormal(x, y, z) {
+  const surf = trafficData ? (trafficData.surface || 'flat') : 'flat';
+  if (surf === 'sphere' || surf === 'hemisphere') {
+    const l = Math.sqrt(x*x + y*y + z*z) || 1e-9;
+    return [x/l, y/l, z/l];
+  }
+  if (surf === 'torus') {
+    const xzl = Math.sqrt(x*x + z*z) || 1e-9;
+    const k = (trafficData.torus_major_sc || 0) / xzl;
+    const ux = x*(1-k), uy = y, uz = z*(1-k);
+    const ul = Math.sqrt(ux*ux + uy*uy + uz*uz) || 1e-9;
+    return [ux/ul, uy/ul, uz/ul];
+  }
+  return [0, 1, 0];
+}
+function _torTangentFrame(nx, ny, nz) {
+  const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+  let hx, hy, hz;
+  if (ax <= ay && ax <= az) { hx=1; hy=0; hz=0; }
+  else if (ay <= az)        { hx=0; hy=1; hz=0; }
+  else                      { hx=0; hy=0; hz=1; }
+  let rx=hy*nz-hz*ny, ry=hz*nx-hx*nz, rz=hx*ny-hy*nx;
+  const rl = Math.sqrt(rx*rx+ry*ry+rz*rz) || 1e-9;
+  rx/=rl; ry/=rl; rz/=rl;
+  return [rx, ry, rz, ny*rz-nz*ry, nz*rx-nx*rz, nx*ry-ny*rx]; // [right, forward]
+}
+function _torProjectToSurface(tor) {
+  const surf = trafficData ? (trafficData.surface || 'flat') : 'flat';
+  if (surf === 'sphere' || surf === 'hemisphere') {
+    const l = Math.sqrt(tor.x*tor.x + tor.y*tor.y + tor.z*tor.z) || 1e-9;
+    tor.x = tor.x/l * tor.surfR;
+    tor.y = tor.y/l * tor.surfR;
+    tor.z = tor.z/l * tor.surfR;
+  } else if (surf === 'torus') {
+    const majorR = trafficData.torus_major_sc || 0;
+    const xzl = Math.sqrt(tor.x*tor.x + tor.z*tor.z) || 1e-9;
+    const ringX = tor.x/xzl * majorR, ringZ = tor.z/xzl * majorR;
+    const offX = tor.x - ringX, offY = tor.y, offZ = tor.z - ringZ;
+    const offL = Math.sqrt(offX*offX + offY*offY + offZ*offZ) || 1e-9;
+    tor.x = ringX + offX/offL * tor.minorR;
+    tor.y =         offY/offL * tor.minorR;
+    tor.z = ringZ + offZ/offL * tor.minorR;
+  }
+}
+
+// ── Tornado Event System ──────────────────────────────────────────────────────
+const TORNADO_SPAWN_INTERVAL = 600;
+let _tornadoTimer = TORNADO_SPAWN_INTERVAL;
+let _tornado = null;
+
+function _spawnTornadoEvent() {
+  if (!trafficData || !currentObj || !carInstancedMesh) return;
+  const segs = trafficData.segments;
+  if (!segs.length) return;
+  const sw = trafficData.street_width;
+
+  // Spawn at a random road midpoint
+  const seg = segs[Math.floor(Math.random() * segs.length)];
+  const ox = (seg.start[0] + seg.end[0]) / 2;
+  const oy = (seg.start[1] + seg.end[1]) / 2;
+  const oz = (seg.start[2] + seg.end[2]) / 2;
+
+  const baseR  = sw * 2.0; // eye radius at ground
+  const topR   = sw * 3.4; // radius at top — tight angle, barely wider
+  const coneH  = sw * 28;  // visual height of funnel
+
+  // Drift slowly in a random direction
+  const driftAngle = Math.random() * Math.PI * 2;
+  const driftSpeed = sw * 1.2;
+
+  // Particle funnel: wide at top, tight at bottom (inverted cone)
+  const NP = 1400;
+  const pPos = new Float32Array(NP * 3);
+  const pCol = new Float32Array(NP * 3);
+  const pAngles  = new Float32Array(NP);
+  const pHeights = new Float32Array(NP);
+  const pRadii   = new Float32Array(NP); // 0-1 radial scale per particle
+
+  for (let i = 0; i < NP; i++) {
+    pHeights[i] = Math.random() * coneH;
+    pAngles[i]  = Math.random() * Math.PI * 2;
+    pRadii[i]   = 0.84 + Math.random() * 0.16; // ring near outer edge — eye is hollow
+    // colour: dark brown/grey at base, lighter grey at top
+    const t = pHeights[i] / coneH;
+    pCol[i*3]   = 0.32 + t * 0.25;
+    pCol[i*3+1] = 0.25 + t * 0.20;
+    pCol[i*3+2] = 0.18 + t * 0.28;
+  }
+
+  const pGeo = new THREE.BufferGeometry();
+  pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+  pGeo.setAttribute('color',    new THREE.BufferAttribute(pCol, 3));
+  const pts = new THREE.Points(pGeo,
+    new THREE.PointsMaterial({ size: 0.8, vertexColors: true, transparent: true, opacity: 0.85, depthWrite: false })
+  );
+  currentObj.add(pts);
+
+  // Surface-tracking constants computed at spawn position
+  const surfR = Math.sqrt(ox*ox + oy*oy + oz*oz); // sphere radius
+  let minorR = 0; // torus tube radius
+  if (trafficData.surface === 'torus') {
+    const majorR = trafficData.torus_major_sc || 0;
+    const xzl0 = Math.sqrt(ox*ox + oz*oz) || 1e-9;
+    const rX = ox/xzl0*majorR, rZ = oz/xzl0*majorR;
+    minorR = Math.sqrt((ox-rX)*(ox-rX) + oy*oy + (oz-rZ)*(oz-rZ));
+  }
+
+  _tornado = {
+    state: 'active',
+    x: ox, y: oy, z: oz,
+    driftX: Math.cos(driftAngle) * driftSpeed,
+    driftZ: Math.sin(driftAngle) * driftSpeed,
+    baseR, topR, coneH, sw, surfR, minorR,
+    pts, pAngles, pHeights, pRadii, NP,
+    capturedCars: [],
+    timer: 0, activeDur: 20, dissipatingDur: 4,
+    spinAngle: 0,
+  };
+}
+
+function _removeTornado() {
+  if (!_tornado) return;
+  const tor = _tornado;
+  // Return captured cars to road at a random segment
+  for (const cc of tor.capturedCars) {
+    const car = carData[cc];
+    if (!car) continue;
+    car.tornadoState = null;
+    const segs = trafficData ? trafficData.segments : [];
+    if (segs.length) {
+      car.segIdx = Math.floor(Math.random() * segs.length);
+      car.dir = Math.random() < 0.5 ? 1 : -1;
+      car.t = Math.random();
+    }
+    car.currentSpeed = 0;
+  }
+  if (tor.pts.parent) tor.pts.parent.remove(tor.pts);
+  tor.pts.geometry.dispose(); tor.pts.material.dispose();
+  _tornado = null;
+  _tornadoTimer = TORNADO_SPAWN_INTERVAL;
+}
+
+function _tickTornado(dt) {
+  if (!_tornado) {
+    if (!trafficData || !currentObj || !carInstancedMesh) return;
+    _tornadoTimer -= dt;
+    if (_tornadoTimer <= 0) _spawnTornadoEvent();
+    return;
+  }
+  const tor = _tornado;
+  const sw = tor.sw;
+  tor.timer += dt;
+  tor.spinAngle += dt * 1.8;
+
+  let intensity = 1;
+  if (tor.state === 'active') {
+    // Drift along the surface tangent plane, then snap back to surface
+    const [ndx, ndy, ndz] = _torSurfNormal(tor.x, tor.y, tor.z);
+    const [rdx, rdy, rdz, fdx, fdy, fdz] = _torTangentFrame(ndx, ndy, ndz);
+    tor.x += (rdx * tor.driftX + fdx * tor.driftZ) * dt;
+    tor.y += (rdy * tor.driftX + fdy * tor.driftZ) * dt;
+    tor.z += (rdz * tor.driftX + fdz * tor.driftZ) * dt;
+    _torProjectToSurface(tor);
+    if (tor.timer >= tor.activeDur) { tor.state = 'dissipating'; tor.timer = 0; }
+  } else {
+    intensity = Math.max(0, 1 - tor.timer / tor.dissipatingDur);
+    tor.pts.material.opacity = 0.85 * intensity;
+    if (tor.timer >= tor.dissipatingDur) { _removeTornado(); return; }
+  }
+
+  // Surface frame at tornado centre (recomputed each frame as it drifts)
+  const [nx, ny, nz] = _torSurfNormal(tor.x, tor.y, tor.z);
+  const [rx, ry, rz, fx_, fy_, fz_] = _torTangentFrame(nx, ny, nz);
+
+  // Animate funnel particles: rise along surface normal, ring in tangent plane
+  const ppa = tor.pts.geometry.attributes.position.array;
+  const riseSpeed = sw * 7;
+  for (let i = 0; i < tor.NP; i++) {
+    tor.pHeights[i] += dt * riseSpeed;
+    if (tor.pHeights[i] > tor.coneH * intensity) {
+      tor.pHeights[i] = 0;
+      tor.pAngles[i] = Math.random() * Math.PI * 2;
+    }
+    const h = tor.pHeights[i];
+    const frac = h / tor.coneH;
+    const coneR = tor.baseR + frac * (tor.topR - tor.baseR);
+    const r = coneR * tor.pRadii[i] * intensity;
+    const spinRate = 2.5 - frac * 1.5;
+    tor.pAngles[i] += dt * spinRate;
+    const ca = Math.cos(tor.pAngles[i]), sa = Math.sin(tor.pAngles[i]);
+    ppa[i*3]   = tor.x + rx*ca*r + fx_*sa*r + nx*h;
+    ppa[i*3+1] = tor.y + ry*ca*r + fy_*sa*r + ny*h;
+    ppa[i*3+2] = tor.z + rz*ca*r + fz_*sa*r + nz*h;
+  }
+  tor.pts.geometry.attributes.position.needsUpdate = true;
+
+  if (!carInstancedMesh) return;
+
+  // Capture nearby cars
+  if (tor.state === 'active') {
+    const captureR = tor.sw * 10.0;
+    const captureRSq = captureR * captureR;
+    for (let i = 0; i < carData.length; i++) {
+      const car = carData[i];
+      if (car.tornadoState) continue;
+      const seg = trafficData.segments[car.segIdx];
+      const s = car.dir === 1 ? seg.start : seg.end;
+      const e = car.dir === 1 ? seg.end   : seg.start;
+      const cx = s[0] + (e[0]-s[0]) * car.t;
+      const cz = s[2] + (e[2]-s[2]) * car.t;
+      const cy = s[1] + (e[1]-s[1]) * car.t + sw * 0.25;
+      const dx = cx - tor.x, dy = cy - tor.y, dz = cz - tor.z;
+      if (dx*dx + dy*dy + dz*dz < captureRSq) {
+        // Project offset onto tangent plane for orbit angle/radius
+        const dr = dx*rx + dy*ry + dz*rz;
+        const df = dx*fx_ + dy*fy_ + dz*fz_;
+        car.tornadoState = {
+          px: cx, py: cy, pz: cz,
+          angle: Math.atan2(df, dr),
+          radius: Math.sqrt(dr*dr + df*df),
+          ht: 0,
+          angularV: 1.5 + Math.random() * 1.5,
+          jx: 0, jz: 0,           // smoothed jitter offset
+          tjx: 0, tjz: 0,         // jitter target
+          jTimer: 0,
+        };
+        tor.capturedCars.push(i);
+      }
+    }
+  }
+
+  // Tick each captured car with vortex physics, write its matrix directly
+  const ela = _torM4.elements;
+  for (const ci of tor.capturedCars) {
+    const car = carData[ci];
+    if (!car || !car.tornadoState) continue;
+    const ts = car.tornadoState;
+
+    // Spiral inward and upward, spin accelerating
+    ts.ht         += dt * sw * 7;
+    ts.angle      += ts.angularV * dt;
+    ts.radius      = Math.max(sw * 0.5, ts.radius * (1 - dt * 0.35));
+    ts.angularV    = Math.min(8, ts.angularV + dt * 0.8);
+
+    // Smoothed turbulence: pick a new target offset every ~0.5s, lerp toward it
+    ts.jTimer -= dt;
+    if (ts.jTimer <= 0) {
+      ts.tjx = (Math.random() - 0.5) * sw * 0.5;
+      ts.tjz = (Math.random() - 0.5) * sw * 0.5;
+      ts.jTimer = 0.4 + Math.random() * 0.3;
+    }
+    ts.jx += (ts.tjx - ts.jx) * Math.min(1, dt * 4);
+    ts.jz += (ts.tjz - ts.jz) * Math.min(1, dt * 4);
+    // Orbit in tangent plane, lift along surface normal, jitter in tangent plane
+    const ca = Math.cos(ts.angle), sa = Math.sin(ts.angle);
+    const px = tor.x + (rx*ca + fx_*sa)*ts.radius + nx*ts.ht + rx*ts.jx + fx_*ts.jz;
+    const py = tor.y + (ry*ca + fy_*sa)*ts.radius + ny*ts.ht + ry*ts.jx + fy_*ts.jz;
+    const pz = tor.z + (rz*ca + fz_*sa)*ts.radius + nz*ts.ht + rz*ts.jx + fz_*ts.jz;
+
+    // Car orientation: surface normal as up, orbit tangent as forward
+    const tdx = -sa*rx + ca*fx_, tdy = -sa*ry + ca*fy_, tdz = -sa*rz + ca*fz_;
+    let crx = ny*tdz-nz*tdy, cry = nz*tdx-nx*tdz, crz = nx*tdy-ny*tdx;
+    const crl = Math.sqrt(crx*crx+cry*cry+crz*crz) || 1e-9;
+    crx/=crl; cry/=crl; crz/=crl;
+    ela[0]=crx; ela[1]=cry; ela[2]=crz; ela[3]=0;
+    ela[4]=nx;  ela[5]=ny;  ela[6]=nz;  ela[7]=0;
+    ela[8]=tdx; ela[9]=tdy; ela[10]=tdz;ela[11]=0;
+    ela[12]=px; ela[13]=py; ela[14]=pz; ela[15]=1;
+    carInstancedMesh.setMatrixAt(car.idx, _torM4);
+  }
+  if (tor.capturedCars.length) carInstancedMesh.instanceMatrix.needsUpdate = true;
+}
+
+// ── UFO Abduction Event System ────────────────────────────────────────────────
+const UFO_SPAWN_INTERVAL = 600;
+let _ufoTimer = UFO_SPAWN_INTERVAL;
+let _ufo = null;
+
+function _spawnUfoEvent() {
+  if (!trafficData || !currentObj) return;
+  const segs = trafficData.segments;
+  if (!segs.length) return;
+  const sw = trafficData.street_width;
+
+  // Pick a random road point for the victim car
+  const segIdx = Math.floor(Math.random() * segs.length);
+  const seg = segs[segIdx];
+  const tp = 0.3 + Math.random() * 0.4;
+  const cx = seg.start[0] + (seg.end[0] - seg.start[0]) * tp;
+  const cy = seg.start[1] + (seg.end[1] - seg.start[1]) * tp;
+  const cz = seg.start[2] + (seg.end[2] - seg.start[2]) * tp;
+  const cdx = seg.end[0] - seg.start[0], cdz = seg.end[2] - seg.start[2];
+  const carLift = sw * 0.25;
+
+  // Surface normal + tangent frame at car position
+  const [nx, ny, nz] = _torSurfNormal(cx, cy, cz);
+  const [rx, ry, rz, fwx, fwy, fwz] = _torTangentFrame(nx, ny, nz);
+  const carX = cx + nx*carLift, carY = cy + ny*carLift, carZ = cz + nz*carLift;
+
+  // Victim car — placed at surface-normal-lifted position
+  const carMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(sw * 0.4, sw * 0.5, sw * 1.2),
+    new THREE.MeshLambertMaterial({ color: 0x00ff88 })
+  );
+  carMesh.rotation.y = Math.atan2(cdx, cdz);
+  carMesh.position.set(carX, carY, carZ);
+  currentObj.add(carMesh);
+
+  // UFO disc + dome + ring lights
+  const ufoR = sw * 4.8;
+  const ufoGrp = new THREE.Group();
+  ufoGrp.matrixAutoUpdate = false;
+
+  const discMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(ufoR, 28, 14),
+    new THREE.MeshLambertMaterial({ color: 0xb0b8cc })
+  );
+  discMesh.scale.y = 0.22;
+  ufoGrp.add(discMesh);
+
+  const domeMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(ufoR * 0.42, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2),
+    new THREE.MeshLambertMaterial({ color: 0x99ddff, transparent: true, opacity: 0.65 })
+  );
+  domeMesh.position.y = ufoR * 0.22;
+  ufoGrp.add(domeMesh);
+
+  const nLights = 12;
+  const lightMats = [];
+  for (let i = 0; i < nLights; i++) {
+    const a = (i / nLights) * Math.PI * 2;
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+    lightMats.push(mat);
+    const lm = new THREE.Mesh(new THREE.SphereGeometry(ufoR * 0.08, 6, 4), mat);
+    lm.position.set(Math.cos(a) * ufoR * 0.82, 0, Math.sin(a) * ufoR * 0.82);
+    ufoGrp.add(lm);
+  }
+
+  const beamLight = new THREE.PointLight(0x88ffcc, 0, sw * 35);
+  beamLight.position.y = -ufoR * 0.4;
+  ufoGrp.add(beamLight);
+
+  // Hover target: above car along surface normal
+  const hoverH = sw * 22;
+  const targetX = cx + nx*hoverH, targetY = cy + ny*hoverH, targetZ = cz + nz*hoverH;
+
+  // Off-screen start: tangent-plane direction + normal height offset
+  const arrivalAngle = Math.random() * Math.PI * 2;
+  const offDist = sw * 180;
+  const arTX = Math.cos(arrivalAngle)*rx + Math.sin(arrivalAngle)*fwx;
+  const arTY = Math.cos(arrivalAngle)*ry + Math.sin(arrivalAngle)*fwy;
+  const arTZ = Math.cos(arrivalAngle)*rz + Math.sin(arrivalAngle)*fwz;
+  const startX = targetX + arTX*offDist + nx*hoverH*1.5;
+  const startY = targetY + arTY*offDist + ny*hoverH*1.5;
+  const startZ = targetZ + arTZ*offDist + nz*hoverH*1.5;
+
+  // Departure: different tangent direction, higher along normal
+  const departAngle = arrivalAngle + Math.PI * (0.4 + Math.random() * 0.6);
+  const depTX = Math.cos(departAngle)*rx + Math.sin(departAngle)*fwx;
+  const depTY = Math.cos(departAngle)*ry + Math.sin(departAngle)*fwy;
+  const depTZ = Math.cos(departAngle)*rz + Math.sin(departAngle)*fwz;
+  const departX = targetX + depTX*offDist + nx*hoverH*3.0;
+  const departY = targetY + depTY*offDist + ny*hoverH*3.0;
+  const departZ = targetZ + depTZ*offDist + nz*hoverH*3.0;
+
+  // Initialise UFO at start position with correct surface orientation
+  const ela = ufoGrp.matrix.elements;
+  ela[0]=rx; ela[1]=ry; ela[2]=rz; ela[3]=0;
+  ela[4]=nx; ela[5]=ny; ela[6]=nz; ela[7]=0;
+  ela[8]=fwx;ela[9]=fwy;ela[10]=fwz;ela[11]=0;
+  ela[12]=startX;ela[13]=startY;ela[14]=startZ;ela[15]=1;
+  currentObj.add(ufoGrp);
+
+  // Tractor beam particles
+  const NB = 480;
+  const beamGeo = new THREE.BufferGeometry();
+  beamGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(NB * 3), 3));
+  const beamPts = new THREE.Points(beamGeo,
+    new THREE.PointsMaterial({ color: 0x88ffcc, size: 0.2, transparent: true, opacity: 0, depthWrite: false })
+  );
+  currentObj.add(beamPts);
+
+  _ufo = {
+    state: 'incoming',
+    carMesh, cx: carX, cy: carY, cz: carZ,
+    ufoGrp, beamPts, beamLight, lightMats, nLights,
+    nx, ny, nz, rx, ry, rz, fwx, fwy, fwz,
+    targetX, targetY, targetZ,
+    startX, startY, startZ, hoverH, sw, ufoR,
+    timer: 0, spinAngle: 0,
+    incomingDur: 10.5, hoverDur: 3.6, liftDur: 9.6, absorbDur: 1.8, departDur: 7.5,
+    departX, departY, departZ,
+    lightTimer: 0, lightIdx: 0,
+    departFromX: 0, departFromY: 0, departFromZ: 0,
+  };
+}
+
+function _removeUfo() {
+  if (!_ufo) return;
+  const u = _ufo;
+  if (u.carMesh.parent) u.carMesh.parent.remove(u.carMesh);
+  u.carMesh.geometry.dispose(); u.carMesh.material.dispose();
+  if (u.ufoGrp.parent) u.ufoGrp.parent.remove(u.ufoGrp);
+  u.ufoGrp.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
+  if (u.beamPts.parent) u.beamPts.parent.remove(u.beamPts);
+  u.beamPts.geometry.dispose(); u.beamPts.material.dispose();
+  _ufo = null;
+  _ufoTimer = UFO_SPAWN_INTERVAL;
+}
+
+function _tickUfo(dt) {
+  if (!_ufo) {
+    if (!trafficData || !currentObj) return;
+    _ufoTimer -= dt;
+    if (_ufoTimer <= 0) _spawnUfoEvent();
+    return;
+  }
+  const u = _ufo;
+  const sw = u.sw;
+  u.timer += dt;
+  u.spinAngle += dt * 0.37;
+
+  // Chase-light ring
+  u.lightTimer += dt;
+  if (u.lightTimer > 0.24) {
+    u.lightTimer = 0;
+    u.lightIdx = (u.lightIdx + 1) % u.nLights;
+    for (let i = 0; i < u.nLights; i++) {
+      const d = Math.min(Math.abs(i - u.lightIdx), u.nLights - Math.abs(i - u.lightIdx));
+      u.lightMats[i].color.setRGB(d === 0 ? 1 : 0.1, d <= 1 ? 0.8 : 0.08, d === 0 ? 0 : 0.05);
+    }
+  }
+
+  // Compute UFO world position for this frame
+  let px, py, pz;
+
+  if (u.state === 'incoming') {
+    const prog = Math.min(1, u.timer / u.incomingDur);
+    const ease = prog < 0.5 ? 2*prog*prog : -1 + (4 - 2*prog)*prog;
+    px = u.startX + (u.targetX - u.startX) * ease;
+    py = u.startY + (u.targetY - u.startY) * ease;
+    pz = u.startZ + (u.targetZ - u.startZ) * ease;
+    if (prog >= 1) { u.state = 'hovering'; u.timer = 0; }
+
+  } else if (u.state === 'hovering') {
+    const bob = Math.sin(u.timer * 0.83) * sw * 0.5;
+    px = u.targetX + u.nx*bob; py = u.targetY + u.ny*bob; pz = u.targetZ + u.nz*bob;
+    const beamAlpha = Math.min(0.72, u.timer / u.hoverDur * 0.72);
+    u.beamPts.material.opacity = beamAlpha;
+    u.beamLight.intensity = beamAlpha * sw * 14;
+    if (u.timer >= u.hoverDur) { u.state = 'lifting'; u.timer = 0; }
+
+  } else if (u.state === 'lifting') {
+    const prog = Math.min(1, u.timer / u.liftDur);
+    const ease = prog * prog * (3 - 2 * prog);
+    const bob = Math.sin(u.timer * 0.5) * sw * 0.3;
+    px = u.targetX + u.nx*bob; py = u.targetY + u.ny*bob; pz = u.targetZ + u.nz*bob;
+    // UFO underside along surface normal
+    const ubx = px - u.nx*u.ufoR*0.22, uby = py - u.ny*u.ufoR*0.22, ubz = pz - u.nz*u.ufoR*0.22;
+    u.carMesh.position.set(u.cx + (ubx-u.cx)*ease, u.cy + (uby-u.cy)*ease, u.cz + (ubz-u.cz)*ease);
+    u.carMesh.rotation.y += dt * ease * 0.73;
+    u.beamPts.material.opacity = 0.72;
+    u.beamLight.intensity = sw * 14;
+    if (prog >= 1) { u.carMesh.visible = false; u.state = 'absorbed'; u.timer = 0; }
+
+  } else if (u.state === 'absorbed') {
+    px = u.targetX; py = u.targetY; pz = u.targetZ;
+    const beamAlpha = Math.max(0, 0.72 * (1 - u.timer / u.absorbDur));
+    u.beamPts.material.opacity = beamAlpha;
+    u.beamLight.intensity = beamAlpha * sw * 14;
+    if (u.timer >= u.absorbDur) {
+      u.departFromX = px; u.departFromY = py; u.departFromZ = pz;
+      u.state = 'departing'; u.timer = 0;
+    }
+
+  } else { // departing
+    const prog = Math.min(1, u.timer / u.departDur);
+    const ease = prog * prog;
+    px = u.departFromX + (u.departX - u.departFromX) * ease;
+    py = u.departFromY + (u.departY - u.departFromY) * ease;
+    pz = u.departFromZ + (u.departZ - u.departFromZ) * ease;
+    u.spinAngle += dt * prog * 1.33;
+    if (prog >= 1) { _removeUfo(); return; }
+  }
+
+  // UFO matrix: disc lies in tangent plane (normal = local Y), spins around normal
+  const cr = Math.cos(u.spinAngle), sr = Math.sin(u.spinAngle);
+  const srx = cr*u.rx + sr*u.fwx, sry = cr*u.ry + sr*u.fwy, srz = cr*u.rz + sr*u.fwz;
+  const sfx = -sr*u.rx + cr*u.fwx, sfy = -sr*u.ry + cr*u.fwy, sfz = -sr*u.rz + cr*u.fwz;
+  const ela = u.ufoGrp.matrix.elements;
+  ela[0]=srx; ela[1]=sry; ela[2]=srz; ela[3]=0;
+  ela[4]=u.nx;ela[5]=u.ny;ela[6]=u.nz;ela[7]=0;
+  ela[8]=sfx; ela[9]=sfy; ela[10]=sfz;ela[11]=0;
+  ela[12]=px; ela[13]=py; ela[14]=pz; ela[15]=1;
+  u.ufoGrp.matrixWorldNeedsUpdate = true;
+
+  // Beam: cone from car to UFO underside, spread in tangent plane
+  if (u.beamPts.material.opacity > 0.01 && u.carMesh.visible) {
+    const ubx = px - u.nx*u.ufoR*0.22, uby = py - u.ny*u.ufoR*0.22, ubz = pz - u.nz*u.ufoR*0.22;
+    const cpx = u.carMesh.position.x, cpy = u.carMesh.position.y, cpz = u.carMesh.position.z;
+    const bpa = u.beamPts.geometry.attributes.position.array;
+    const nb = bpa.length / 3;
+    for (let i = 0; i < nb; i++) {
+      const bt = Math.random();
+      const r = bt * u.ufoR * 0.88 * (0.4 + Math.random() * 0.6);
+      const ba = Math.random() * Math.PI * 2;
+      const bra = Math.cos(ba)*r, bfa = Math.sin(ba)*r;
+      bpa[i*3]   = cpx + (ubx-cpx)*bt + u.rx*bra + u.fwx*bfa;
+      bpa[i*3+1] = cpy + (uby-cpy)*bt + u.ry*bra + u.fwy*bfa;
+      bpa[i*3+2] = cpz + (ubz-cpz)*bt + u.rz*bra + u.fwz*bfa;
+    }
+    u.beamPts.geometry.attributes.position.needsUpdate = true;
+  }
+}
+
 // ── OBJ Loader ────────────────────────────────────────────
 const loader = new OBJLoader();
 
@@ -711,6 +1563,9 @@ function loadModel(path) {
     currentObj = null;
   }
   removeRain();
+  _removeFire();
+  _removeUfo();
+  _removeTornado();
 
   loader.load(path, (obj) => {
     const box = new THREE.Box3().setFromObject(obj);
@@ -871,6 +1726,9 @@ renderer.setAnimationLoop(() => {
   controls.update();
 
   if (carsEnabled) updateCars(dt);
+  _tickFire(dt);
+  _tickUfo(dt);
+  _tickTornado(dt);
   renderer.render(scene, camera);
 });
 
@@ -946,6 +1804,18 @@ document.getElementById('wire-opacity').addEventListener('input', () => {
   if (mode === 'wireframe') applyWireframe();
 });
 
+
+document.getElementById('btn-fire').addEventListener('click', () => {
+  if (!_fire) _spawnFireEvent();
+});
+
+document.getElementById('btn-ufo').addEventListener('click', () => {
+  if (!_ufo) _spawnUfoEvent();
+});
+
+document.getElementById('btn-tornado').addEventListener('click', () => {
+  if (!_tornado) _spawnTornadoEvent();
+});
 
 document.getElementById('btn-cars').addEventListener('click', () => {
   carsEnabled = !carsEnabled;
@@ -1101,6 +1971,9 @@ document.getElementById('btn-generate').addEventListener('click', () => {
 
     // Build Three.js group from typed arrays
     if (currentObj) {
+      _removeFire();
+      _removeUfo();
+      _removeTornado();
       removeCars();
       scene.remove(currentObj);
       currentObj.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
