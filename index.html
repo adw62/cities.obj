@@ -294,6 +294,7 @@
 
   <button class="mode-btn active" data-mode="orbit">Orbit</button>
   <button class="mode-btn" data-mode="daynight">Day/Night</button>
+  <button class="mode-btn" id="btn-daynightpause" style="display:none">⏸</button>
   <button class="mode-btn" data-mode="rain">Rain</button>
   <button class="mode-btn" data-mode="wireframe">Wireframe</button>
   <button class="mode-btn" id="btn-fire">Fire!</button>
@@ -390,6 +391,11 @@ scene.add(ambient);
 const sun = new THREE.DirectionalLight(0xfff4cc, 1.2);
 sun.position.set(100, 150, 80);
 scene.add(sun);
+
+const _sunSphereMat = new THREE.MeshBasicMaterial({ color: 0xfff4cc });
+const _sunSphere = new THREE.Mesh(new THREE.SphereGeometry(6, 16, 16), _sunSphereMat);
+_sunSphere.visible = false;
+scene.add(_sunSphere);
 
 const fillLight = new THREE.DirectionalLight(0x8888ff, 0.3);
 fillLight.position.set(-80, 20, -60);
@@ -1712,21 +1718,33 @@ function updateRain() {
 
 // ── Animation loop ────────────────────────────────────────
 let flyT = 0;
+let dayNightPaused = false;
 
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
 
   if (currentObj) {
     if (mode === 'daynight') {
-      flyT += 0.008;
+      if (!dayNightPaused) flyT += 0.0004;
       const sunY = Math.sin(flyT);
       sun.position.set(Math.cos(flyT) * 200, sunY * 200, 60);
       const t = Math.max(0, sunY);
       const night = 1 - t;
-      _bgColor.setRGB(night * 0.04, night * 0.04, night * 0.08 + t * 0.4);
+      // horizon band: strong when sun is near 0, fades quickly above/below
+      const horizonBand = Math.exp(-Math.pow(sunY / 0.18, 2));
+      // sky: deep night → fiery orange-red sunset band → blue day
+      const skyR = night * 0.04 + horizonBand * 0.55 + t * 0.30;
+      const skyG = night * 0.04 + horizonBand * 0.10 + t * 0.38;
+      const skyB = night * 0.08 + horizonBand * 0.02 + t * 0.40;
+      _bgColor.setRGB(skyR, skyG, skyB);
       scene.background = _bgColor;
       ambient.intensity = 0.1 + t * 0.9;
-      sun.color.setRGB(1, 0.6 + t * 0.4, 0.3 + t * 0.7);
+      sun.color.setRGB(1, 0.3 + t * 0.65, horizonBand * 0.1 + t * 0.65);
+      // sun sphere: visible above horizon, deep red at horizon, white-yellow at zenith
+      _sunSphere.position.copy(sun.position);
+      _sunSphere.visible = sunY > -0.05;
+      const horizon = Math.min(1, Math.max(0, sunY / 0.25));
+      _sunSphereMat.color.setRGB(1, 0.15 + horizon * 0.7, horizon * 0.55);
     }
 
     if (mode === 'rain') {
@@ -1756,9 +1774,15 @@ document.querySelectorAll('#topbar [data-mode]').forEach(btn => {
     if (mode === 'rain') buildRain();
     else removeRain();
 
+    const dnBtn = document.getElementById('btn-daynightpause');
     if (mode === 'daynight') {
       flyT = 0;
+      dayNightPaused = false;
+      dnBtn.style.display = '';
+      dnBtn.textContent = '⏸';
     } else {
+      dnBtn.style.display = 'none';
+      _sunSphere.visible = false;
       scene.background = new THREE.Color(0x0a0a12);
       renderer.setClearColor(0x0a0a12);
       ambient.intensity = parseFloat(document.getElementById('ambient-slider').value);
@@ -1816,6 +1840,11 @@ document.getElementById('wire-opacity').addEventListener('input', () => {
   if (mode === 'wireframe') applyWireframe();
 });
 
+
+document.getElementById('btn-daynightpause').addEventListener('click', () => {
+  dayNightPaused = !dayNightPaused;
+  document.getElementById('btn-daynightpause').textContent = dayNightPaused ? '▶' : '⏸';
+});
 
 document.getElementById('btn-fire').addEventListener('click', () => {
   if (!_fire) _spawnFireEvent();
