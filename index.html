@@ -300,6 +300,7 @@
   <button class="mode-btn" id="btn-fire">Fire!</button>
   <button class="mode-btn" id="btn-ufo">UFO!</button>
   <button class="mode-btn" id="btn-tornado">Tornado!</button>
+  <button class="mode-btn" id="btn-birds">Birds</button>
 
   <div id="music-controls">
     <button class="mode-btn" id="music-prev">&#9664;&#9664;</button>
@@ -1332,6 +1333,160 @@ const UFO_SPAWN_INTERVAL = 600;
 let _ufoTimer = UFO_SPAWN_INTERVAL;
 let _ufo = null;
 
+// ── Boid bird flock ───────────────────────────────────────────────────────────
+let _birds = null;
+
+function _spawnBirds() {
+  if (!trafficData) return;
+  const sw = trafficData.street_width;
+
+  let maxX = 0, maxZ = 0;
+  for (const seg of trafficData.segments) {
+    maxX = Math.max(maxX, Math.abs(seg.start[0]), Math.abs(seg.end[0]));
+    maxZ = Math.max(maxZ, Math.abs(seg.start[2]), Math.abs(seg.end[2]));
+  }
+  const halfW = maxX || sw * 25, halfD = maxZ || sw * 25;
+  const flightH   = sw * 600;
+  const flightBand = sw * 400;
+  const spd       = sw * 200;    // constant centre speed
+  const SEP_R     = sw * 150;  // separation radius between centres
+
+  const NC = 1000, NB = 4000;
+  const spread = sw * 80;
+
+  function _randTarget(c) {
+    c.wx = (Math.random() - 0.5) * halfW * 1.6;
+    c.wy = flightH + (Math.random() - 0.5) * flightBand;
+    c.wz = (Math.random() - 0.5) * halfD * 1.6;
+    c.wTimer = 4 + Math.random() * 6;
+  }
+
+  const centers = [];
+  for (let i = 0; i < NC; i++) {
+    const angle = (i / NC) * Math.PI * 2;
+    const c = {
+      x: Math.cos(angle) * halfW * 0.7,
+      y: flightH + (Math.random() - 0.5) * flightBand,
+      z: Math.sin(angle) * halfD * 0.7,
+      // heading: unit vector in XZ
+      hx: -Math.sin(angle), hy: 0, hz: Math.cos(angle),
+      wx: 0, wy: 0, wz: 0, wTimer: 0,
+    };
+    _randTarget(c);
+    centers.push(c);
+  }
+
+  // Per-bird offsets
+  const assign   = new Int32Array(NB);
+  const offX     = new Float32Array(NB);
+  const offY     = new Float32Array(NB);
+  const offZ     = new Float32Array(NB);
+  const tgtOX    = new Float32Array(NB);
+  const tgtOY    = new Float32Array(NB);
+  const tgtOZ    = new Float32Array(NB);
+  const offTimer = new Float32Array(NB);
+  for (let i = 0; i < NB; i++) {
+    assign[i]   = i % NC;
+    tgtOX[i]    = (Math.random() - 0.5) * spread;
+    tgtOY[i]    = (Math.random() - 0.5) * spread * 0.35;
+    tgtOZ[i]    = (Math.random() - 0.5) * spread;
+    offTimer[i] = Math.random() * 2;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  const pa  = new Float32Array(NB * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(pa, 3));
+  const mat = new THREE.PointsMaterial({ color: 0x111111, size: 0.1, sizeAttenuation: true, depthWrite: false });
+  const pts = new THREE.Points(geo, mat);
+  scene.add(pts);
+
+  _birds = { centers, pts, pa, assign, offX, offY, offZ, tgtOX, tgtOY, tgtOZ, offTimer,
+             NC, NB, sw, halfW, halfD, flightH, flightBand, spd, SEP_R, spread, _randTarget };
+}
+
+function _tickBirds(dt) {
+  if (!_birds) return;
+  const b = _birds;
+  const { centers, NC, NB, spd, SEP_R, spread } = b;
+  const TURN = dt * 2.2;   // max heading turn per second
+
+  // group centroid for cohesion
+  let gx = 0, gy = 0, gz = 0;
+  for (const c of centers) { gx += c.x; gy += c.y; gz += c.z; }
+  gx /= NC; gy /= NC; gz /= NC;
+
+  for (let i = 0; i < NC; i++) {
+    const c = centers[i];
+
+    // count down wander timer; pick new target when expired or arrived
+    c.wTimer -= dt;
+    const tdx = c.wx - c.x, tdz = c.wz - c.z;
+    if (c.wTimer <= 0 || Math.hypot(tdx, tdz) < b.sw * 50) b._randTarget(c);
+
+    // desired direction: blend wander target (70%) with centroid pull (30%)
+    const COH = 0.8;
+    let dx = (c.wx - c.x) * (1 - COH) + (gx - c.x) * COH;
+    let dy = (c.wy - c.y) * (1 - COH) + (gy - c.y) * COH * 0.3;
+    let dz = (c.wz - c.z) * (1 - COH) + (gz - c.z) * COH;
+
+    // separation: steer away from nearby centres
+    for (let j = 0; j < NC; j++) {
+      if (i === j) continue;
+      const sx = c.x - centers[j].x, sz = c.z - centers[j].z;
+      const d = Math.hypot(sx, sz);
+      if (d < SEP_R && d > 0) {
+        dx += (sx / d) * (SEP_R - d) * 3;
+        dz += (sz / d) * (SEP_R - d) * 3;
+      }
+    }
+
+    // normalise desired direction and smoothly turn heading toward it
+    const dl = Math.hypot(dx, dy, dz) || 1e-9;
+    const nx = dx/dl, ny = dy/dl, nz = dz/dl;
+    c.hx += (nx - c.hx) * TURN;
+    c.hy += (ny - c.hy) * TURN;
+    c.hz += (nz - c.hz) * TURN;
+    const hl = Math.hypot(c.hx, c.hy, c.hz) || 1e-9;
+    c.hx /= hl; c.hy /= hl; c.hz /= hl;
+
+    // move at constant speed along heading
+    c.x += c.hx * spd * dt;
+    c.y += c.hy * spd * dt * 0.4;
+    c.z += c.hz * spd * dt;
+  }
+
+  // ── Update bird particles ─────────────────────────────────────────────────
+  const pa = b.pa;
+  for (let i = 0; i < NB; i++) {
+    b.offTimer[i] -= dt;
+    if (b.offTimer[i] <= 0) {
+      b.tgtOX[i] = (Math.random() - 0.5) * spread;
+      b.tgtOY[i] = (Math.random() - 0.5) * spread * 0.35;
+      b.tgtOZ[i] = (Math.random() - 0.5) * spread;
+      b.offTimer[i] = 0.8 + Math.random() * 1.4;
+    }
+    const lr = Math.min(1, dt * 2.5);
+    b.offX[i] += (b.tgtOX[i] - b.offX[i]) * lr;
+    b.offY[i] += (b.tgtOY[i] - b.offY[i]) * lr;
+    b.offZ[i] += (b.tgtOZ[i] - b.offZ[i]) * lr;
+
+    const c = centers[b.assign[i]];
+    pa[i*3]   = c.x + b.offX[i];
+    pa[i*3+1] = c.y + b.offY[i];
+    pa[i*3+2] = c.z + b.offZ[i];
+  }
+  b.pts.geometry.attributes.position.needsUpdate = true;
+}
+
+function _despawnBirds() {
+  if (!_birds) return;
+  scene.remove(_birds.pts);
+  _birds.pts.geometry.dispose();
+  _birds.pts.material.dispose();
+  _birds = null;
+  document.getElementById('btn-birds').classList.remove('active');
+}
+
 function _spawnUfoEvent() {
   if (!trafficData || !currentObj) return;
   const segs = trafficData.segments;
@@ -1759,6 +1914,7 @@ renderer.setAnimationLoop(() => {
   _tickFire(dt);
   _tickUfo(dt);
   _tickTornado(dt);
+  _tickBirds(dt);
   renderer.render(scene, camera);
 });
 
@@ -1856,6 +2012,11 @@ document.getElementById('btn-ufo').addEventListener('click', () => {
 
 document.getElementById('btn-tornado').addEventListener('click', () => {
   if (!_tornado) _spawnTornadoEvent();
+});
+
+document.getElementById('btn-birds').addEventListener('click', () => {
+  if (_birds) { _despawnBirds(); }
+  else { _spawnBirds(); document.getElementById('btn-birds').classList.add('active'); }
 });
 
 document.getElementById('btn-cars').addEventListener('click', () => {
