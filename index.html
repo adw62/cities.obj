@@ -34,18 +34,6 @@
 
     #topbar h1 { font-size: 13px; color: #888; white-space: nowrap; }
 
-    #model-select {
-      background: #111;
-      border: 1px solid #333;
-      color: #eee;
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-family: monospace;
-      font-size: 12px;
-      cursor: pointer;
-      flex: 1;
-      max-width: 240px;
-    }
 
     .mode-btn {
       background: #111;
@@ -63,20 +51,6 @@
     .mode-btn.active { background: #2a4a8a; color: #8af; border-color: #4a6aaa; }
 
     /* ── Side panel ── */
-    #panel {
-      position: fixed;
-      top: 48px; right: 0;
-      width: 200px;
-      background: rgba(0,0,0,0.85);
-      border-left: 1px solid #222;
-      padding: 12px;
-      z-index: 10;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      font-size: 11px;
-    }
-
     .panel-section label {
       display: block;
       color: #666;
@@ -125,14 +99,21 @@
       z-index: 10;
     }
 
-    #gen-panel {
+    #left-panels {
       position: fixed;
       top: 48px; left: 0;
       width: 200px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #gen-panel, #events-panel {
+      width: 200px;
       background: rgba(0,0,0,0.85);
       border-right: 1px solid #222;
+      border-bottom: 1px solid #222;
       padding: 12px;
-      z-index: 10;
       display: flex;
       flex-direction: column;
       gap: 10px;
@@ -192,16 +173,21 @@
     #btn-download:hover { background: #2a4a2a; }
 
     #gen-status { color: #666; font-size: 10px; min-height: 14px; }
+
   </style>
 </head>
 <body>
 
 <div id="canvas-container"></div>
 
+<div id="left-panels">
 <!-- Generator panel -->
 <div id="gen-panel">
-  <div style="color:#aaa;font-size:12px;font-weight:bold;">Generate City</div>
-
+  <div id="gen-panel-header" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;color:#aaa;font-size:12px;font-weight:bold;padding-bottom:8px;border-bottom:1px solid #222;">
+    <span>Generate City</span>
+    <span id="gen-toggle-arrow">▶</span>
+  </div>
+  <div id="gen-panel-body" style="display:none;flex-direction:column;gap:10px;margin-top:10px;">
   <div class="panel-section">
     <label>Seed</label>
     <input type="number" id="gen-seed" value="7" min="0" max="999999">
@@ -285,22 +271,98 @@
   <button id="btn-generate">Generate</button>
   <button id="btn-download">Download OBJ</button>
   <div id="gen-status"></div>
+  </div><!-- end gen-panel-body -->
 </div>
+
+<!-- Events panel -->
+<div id="events-panel">
+  <div id="events-panel-header" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;color:#aaa;font-size:12px;font-weight:bold;padding-bottom:8px;border-bottom:1px solid #222;">
+    <span>Events</span>
+    <span id="events-toggle-arrow">▶</span>
+  </div>
+  <div id="events-panel-body" style="display:none;flex-direction:column;gap:6px;margin-top:4px;">
+    <button class="mode-btn active" id="btn-cars" style="width:100%">Cars: ON</button>
+    <label style="color:#666;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-top:4px">Car Count <span id="car-count-val">40</span></label>
+    <input type="range" id="car-count" min="5" max="200" step="5" value="40" style="width:100%">
+    <button class="mode-btn" id="btn-rain" style="width:100%">Rain</button>
+    <button class="mode-btn" id="btn-fire" style="width:100%">Fire</button>
+    <button class="mode-btn" id="btn-ufo" style="width:100%">UFO</button>
+    <button class="mode-btn" id="btn-tornado" style="width:100%">Tornado</button>
+    <button class="mode-btn" id="btn-birds" style="width:100%">Birds</button>
+  </div>
+</div>
+
+<!-- Sky panel -->
+<div id="sky-panel" style="width:200px;background:rgba(0,0,0,0.85);border-right:1px solid #222;border-bottom:1px solid #222;padding:12px;display:flex;flex-direction:column;gap:10px;font-size:11px;">
+  <div id="sky-panel-header" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;color:#aaa;font-size:12px;font-weight:bold;padding-bottom:8px;border-bottom:1px solid #222;">
+    <span>Sky</span>
+    <span id="sky-toggle-arrow">▶</span>
+  </div>
+  <div id="sky-panel-body" style="display:none;flex-direction:column;gap:8px;">
+    <button class="mode-btn" id="btn-daynight" style="width:100%">Sun</button>
+    <div class="panel-section">
+      <label>Planets <span id="planet-count-val">4</span></label>
+      <input type="range" id="planet-count" min="0" max="12" step="1" value="4" style="width:100%">
+    </div>
+    <div class="panel-section">
+      <label>Time of Day</label>
+      <input type="range" id="tod-slider" min="0" max="1" step="0.002" value="0.25" style="width:100%">
+    </div>
+    <div class="panel-section">
+      <label>Time of Year</label>
+      <input type="range" id="toy-slider" min="0" max="1" step="0.002" value="0" style="width:100%">
+    </div>
+  </div>
+</div>
+
+<!-- Scene panel -->
+<div id="scene-panel" style="width:200px;background:rgba(0,0,0,0.85);border-right:1px solid #222;border-bottom:1px solid #222;padding:12px;display:flex;flex-direction:column;gap:10px;font-size:11px;">
+  <div id="scene-panel-header" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;color:#aaa;font-size:12px;font-weight:bold;padding-bottom:8px;border-bottom:1px solid #222;">
+    <span>Scene</span>
+    <span id="scene-toggle-arrow">▶</span>
+  </div>
+  <div id="scene-panel-body" style="display:none;flex-direction:column;gap:10px;">
+    <div class="panel-section">
+      <label>Base Color</label>
+      <input type="color" id="color-base" value="#1a1a2e">
+    </div>
+    <div class="panel-section">
+      <label>Building Color</label>
+      <input type="color" id="color-pick" value="#4488cc">
+    </div>
+    <div class="panel-section">
+      <label>Road Color</label>
+      <input type="color" id="color-road" value="#334455">
+    </div>
+    <div class="panel-section">
+      <label>Depth Fog</label>
+      <label style="display:flex;gap:8px;align-items:center;text-transform:none;color:#aaa;font-size:11px;margin-bottom:4px">
+        <input type="checkbox" id="fog-toggle"> Enable
+      </label>
+      <input type="range" id="fog-density" min="0.002" max="0.06" step="0.001" value="0.015">
+    </div>
+    <div class="panel-section">
+      <label>Rotation Speed</label>
+      <input type="range" id="speed-slider" min="0" max="0.05" step="0.001" value="0.0015">
+    </div>
+    <div class="panel-section">
+      <label>Ambient Light</label>
+      <input type="range" id="ambient-slider" min="0" max="2" step="0.05" value="0.5">
+    </div>
+    <div class="panel-section">
+      <button class="mode-btn" id="btn-wireframe" style="width:100%;margin-bottom:4px">Wireframe</button>
+      <label>Wire Opacity</label>
+      <input type="range" id="wire-opacity" min="0.05" max="1" step="0.05" value="0.15">
+    </div>
+  </div>
+</div>
+
+</div><!-- end left-panels -->
 
 <!-- Top bar -->
 <div id="topbar">
   <h1>City Viewer</h1>
-  <select id="model-select"></select>
-
-  <button class="mode-btn active" data-mode="orbit">Orbit</button>
-  <button class="mode-btn" data-mode="daynight">Day/Night</button>
-  <button class="mode-btn" id="btn-daynightpause" style="display:none">⏸</button>
-  <button class="mode-btn" data-mode="rain">Rain</button>
-  <button class="mode-btn" data-mode="wireframe">Wireframe</button>
-  <button class="mode-btn" id="btn-fire">Fire!</button>
-  <button class="mode-btn" id="btn-ufo">UFO!</button>
-  <button class="mode-btn" id="btn-tornado">Tornado!</button>
-  <button class="mode-btn" id="btn-birds">Birds</button>
+  <button class="mode-btn" id="btn-daynightpause">⏸</button>
 
   <div id="music-controls">
     <button class="mode-btn" id="music-prev">&#9664;&#9664;</button>
@@ -311,47 +373,6 @@
   </div>
 </div>
 
-<!-- Side panel -->
-<div id="panel">
-  <div class="panel-section">
-    <label>Base Color</label>
-    <input type="color" id="color-base" value="#1a1a2e">
-  </div>
-  <div class="panel-section">
-    <label>Building Color</label>
-    <input type="color" id="color-pick" value="#4488cc">
-  </div>
-  <div class="panel-section">
-    <label>Road Color</label>
-    <input type="color" id="color-road" value="#334455">
-  </div>
-  <div class="panel-section">
-    <label>Depth Fog</label>
-    <label style="display:flex;gap:8px;align-items:center;text-transform:none;color:#aaa;font-size:11px;margin-bottom:4px">
-      <input type="checkbox" id="fog-toggle"> Enable
-    </label>
-    <input type="range" id="fog-density" min="0.002" max="0.06" step="0.001" value="0.015">
-  </div>
-  <div class="panel-section">
-    <label>Rotation Speed</label>
-    <input type="range" id="speed-slider" min="0" max="0.05" step="0.001" value="0.0015">
-  </div>
-  <div class="panel-section">
-    <label>Ambient Light</label>
-    <input type="range" id="ambient-slider" min="0" max="2" step="0.05" value="0.5">
-  </div>
-  <div class="panel-section">
-    <label>Wire Opacity</label>
-    <input type="range" id="wire-opacity" min="0.05" max="1" step="0.05" value="0.15">
-  </div>
-  <div class="panel-section">
-    <label>Traffic</label>
-    <button class="mode-btn active" id="btn-cars" style="width:100%;margin-bottom:4px">Cars: ON</button>
-    <label>Car Count</label>
-    <input type="range" id="car-count" min="5" max="200" step="5" value="40">
-    <span id="car-count-val">40</span>
-  </div>
-</div>
 
 <div id="status">Loading…</div>
 
@@ -382,7 +403,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0a12);
 scene.fog = null;
 
-const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 80000);
 camera.position.set(0, 60, 120);
 
 // ── Lights ────────────────────────────────────────────────
@@ -393,8 +414,8 @@ const sun = new THREE.DirectionalLight(0xfff4cc, 1.2);
 sun.position.set(100, 150, 80);
 scene.add(sun);
 
-const _sunSphereMat = new THREE.MeshBasicMaterial({ color: 0xfff4cc });
-const _sunSphere = new THREE.Mesh(new THREE.SphereGeometry(6, 16, 16), _sunSphereMat);
+const _sunSphereMat = new THREE.MeshBasicMaterial({ color: 0xfff4cc, transparent: true });
+const _sunSphere = new THREE.Mesh(new THREE.SphereGeometry(30, 24, 24), _sunSphereMat);
 _sunSphere.visible = false;
 scene.add(_sunSphere);
 
@@ -402,6 +423,43 @@ const fillLight = new THREE.DirectionalLight(0x8888ff, 0.3);
 fillLight.position.set(-80, 20, -60);
 scene.add(fillLight);
 
+
+// ── Sky: planets ──────────────────────────────────────────
+let _solarPlanets = [];
+
+function _spawnPlanets() {
+  for (const p of _solarPlanets) { scene.remove(p.mesh); p.mesh.geometry.dispose(); p.mesh.material.dispose(); }
+  _solarPlanets = [];
+  const count = parseInt(document.getElementById('planet-count').value);
+  const hueStep = 1 / (count || 1);
+  for (let i = 0; i < count; i++) {
+    const r      = 6  + Math.random() * 30;
+    const orbitR = 300 + Math.random() * 1200;
+    const speed  = 0.0005 + Math.random() * 0.003;
+    const tilt   = (Math.random() - 0.5) * 0.6;
+    const zOff   = (Math.random() - 0.5) * 150;
+    const angle  = Math.random() * Math.PI * 2;
+    const color  = new THREE.Color().setHSL((i * hueStep + Math.random() * 0.1) % 1, 0.7, 0.6);
+    const mesh   = new THREE.Mesh(
+      new THREE.SphereGeometry(r, 24, 24),
+      new THREE.MeshPhongMaterial({ color, shininess: 15 })
+    );
+    scene.add(mesh);
+    _solarPlanets.push({ mesh, r, orbitR, speed, tilt, zOff, angle });
+  }
+}
+
+function _tickSolar(dt) {
+  for (const p of _solarPlanets) {
+    if (!dayNightPaused) p.angle += p.speed * dt;
+    const a = p.angle + _yearAngle * (p.speed / 0.002);
+    p.mesh.position.set(
+      Math.cos(a) * p.orbitR,
+      Math.sin(a) * p.orbitR,
+      p.zOff + Math.sin(a) * p.orbitR * p.tilt
+    );
+  }
+}
 
 // ── Controls ──────────────────────────────────────────────
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -412,7 +470,9 @@ controls.autoRotate = true;
 // ── State ─────────────────────────────────────────────────
 let currentObj = null;
 let rainSystem = null;
-let mode = 'orbit';
+let mode = 'default';
+let sunEnabled = false;
+let wireEnabled = false;
 let modelColor = new THREE.Color(0x4488cc);
 let baseColor  = new THREE.Color(0x1a1a2e);
 let roadColor  = new THREE.Color(0x334455);
@@ -928,8 +988,6 @@ function _removeFire() {
 function _tickFire(dt) {
   if(!_fire){
     if(!trafficData||!currentObj) return;
-    _fireTimer-=dt;
-    if(_fireTimer<=0) _spawnFireEvent();
     return;
   }
   const f=_fire;
@@ -1197,8 +1255,6 @@ function _removeTornado() {
 function _tickTornado(dt) {
   if (!_tornado) {
     if (!trafficData || !currentObj || !carInstancedMesh) return;
-    _tornadoTimer -= dt;
-    if (_tornadoTimer <= 0) _spawnTornadoEvent();
     return;
   }
   const tor = _tornado;
@@ -1704,12 +1760,7 @@ function _removeUfo() {
 }
 
 function _tickUfo(dt) {
-  if (!_ufo) {
-    if (!trafficData || !currentObj) return;
-    _ufoTimer -= dt;
-    if (_ufoTimer <= 0) _spawnUfoEvent();
-    return;
-  }
+  if (!_ufo) return;
   const u = _ufo;
   const sw = u.sw;
   u.timer += dt;
@@ -1840,7 +1891,7 @@ function loadModel(path) {
     currentObj = merged;
     applyWireframe();
 
-    if (mode === 'rain') buildRain();
+    _spawnPlanets();
     loadTrafficJSON(path);
 
     status.textContent = `${path.split('/').pop()} — ${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} units`;
@@ -1894,7 +1945,7 @@ function updateColors() {
 //   - LineSegments uses gl.LINES directly, no triangle→line tessellation per draw
 function applyWireframe() {
   if (!currentObj) return;
-  const isWire = mode === 'wireframe';
+  const isWire = wireEnabled;
   const opacity = parseFloat(document.getElementById('wire-opacity').value);
   const meshes = [];
   currentObj.traverse(c => { if (c.isMesh && c.userData.colorKey) meshes.push(c); });
@@ -1921,6 +1972,7 @@ function applyWireframe() {
       if (isWire) {
         lines.material.opacity = opacity;
         lines.material.transparent = opacity < 1;
+        lines.material.needsUpdate = true;
       }
     }
   }
@@ -1963,15 +2015,17 @@ renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
 
   if (currentObj) {
-    if (mode === 'daynight') {
-      if (!dayNightPaused) flyT += 0.0004;
-      const sunY = Math.sin(flyT);
-      sun.position.set(Math.cos(flyT) * 200, sunY * 200, 60);
+    if (sunEnabled && !dayNightPaused) {
+      flyT += 0.0002 * Math.max(0.15, Math.min(1, Math.abs(Math.sin(flyT)) * 2.5));
+      document.getElementById('tod-slider').value = (flyT % (Math.PI * 2)) / (Math.PI * 2);
+    }
+    // directional light always follows flyT
+    const sunY = Math.sin(flyT);
+    sun.position.set(Math.cos(flyT) * 400, sunY * 400, 0);
+    if (sunEnabled) {
       const t = Math.max(0, sunY);
       const night = 1 - t;
-      // horizon band: strong when sun is near 0, fades quickly above/below
       const horizonBand = Math.exp(-Math.pow(sunY / 0.18, 2));
-      // sky: deep night → fiery orange-red sunset band → blue day
       const skyR = night * 0.04 + horizonBand * 0.55 + t * 0.30;
       const skyG = night * 0.04 + horizonBand * 0.10 + t * 0.38;
       const skyB = night * 0.08 + horizonBand * 0.02 + t * 0.40;
@@ -1979,17 +2033,15 @@ renderer.setAnimationLoop(() => {
       scene.background = _bgColor;
       ambient.intensity = 0.1 + t * 0.9;
       sun.color.setRGB(1, 0.3 + t * 0.65, horizonBand * 0.1 + t * 0.65);
-      // sun sphere: visible above horizon, deep red at horizon, white-yellow at zenith
       _sunSphere.position.copy(sun.position);
-      _sunSphere.visible = sunY > -0.05;
+      const sunFade = Math.min(1, Math.max(0, (sunY + 0.35) / 0.2));
+      _sunSphere.visible = sunFade > 0;
+      _sunSphereMat.opacity = sunFade;
       const horizon = Math.min(1, Math.max(0, sunY / 0.25));
       _sunSphereMat.color.setRGB(1, 0.15 + horizon * 0.7, horizon * 0.55);
     }
 
-    if (mode === 'rain') {
-      currentObj.rotation.y += rotSpeed * 0.3;
-      updateRain();
-    }
+    if (rainSystem) updateRain();
   }
 
   controls.update();
@@ -1999,43 +2051,12 @@ renderer.setAnimationLoop(() => {
   _tickUfo(dt);
   _tickTornado(dt);
   _tickBirds(dt);
+  _tickSolar(dt);
   renderer.render(scene, camera);
 });
 
 // ── UI events ─────────────────────────────────────────────
-document.querySelectorAll('#topbar [data-mode]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('#topbar [data-mode]').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    mode = btn.dataset.mode;
 
-    controls.autoRotate = (mode === 'orbit' || mode === 'wireframe');
-
-    if (mode === 'rain') buildRain();
-    else removeRain();
-
-    const dnBtn = document.getElementById('btn-daynightpause');
-    if (mode === 'daynight') {
-      flyT = 0;
-      dayNightPaused = false;
-      dnBtn.style.display = '';
-      dnBtn.textContent = '⏸';
-    } else {
-      dnBtn.style.display = 'none';
-      _sunSphere.visible = false;
-      scene.background = new THREE.Color(0x0a0a12);
-      renderer.setClearColor(0x0a0a12);
-      ambient.intensity = parseFloat(document.getElementById('ambient-slider').value);
-      sun.color.set(0xfff4cc);
-    }
-
-    applyWireframe();
-  });
-});
-
-document.getElementById('model-select').addEventListener('change', e => {
-  loadModel(e.target.value);
-});
 
 document.getElementById('color-base').addEventListener('input', e => {
   baseColor.set(e.target.value);
@@ -2077,13 +2098,52 @@ document.getElementById('ambient-slider').addEventListener('input', e => {
 });
 
 document.getElementById('wire-opacity').addEventListener('input', () => {
-  if (mode === 'wireframe') applyWireframe();
+  if (wireEnabled) applyWireframe();
 });
 
+document.getElementById('planet-count').addEventListener('input', e => {
+  document.getElementById('planet-count-val').textContent = e.target.value;
+  _spawnPlanets();
+});
+
+document.getElementById('tod-slider').addEventListener('input', e => {
+  flyT = parseFloat(e.target.value) * Math.PI * 2;
+  dayNightPaused = true;
+});
+
+let _yearAngle = 0;
+document.getElementById('toy-slider').addEventListener('input', e => {
+  _yearAngle = parseFloat(e.target.value) * Math.PI * 2;
+});
+
+
+document.getElementById('btn-wireframe').addEventListener('click', () => {
+  wireEnabled = !wireEnabled;
+  document.getElementById('btn-wireframe').classList.toggle('active', wireEnabled);
+  applyWireframe();
+});
+
+document.getElementById('btn-daynight').addEventListener('click', () => {
+  sunEnabled = !sunEnabled;
+  document.getElementById('btn-daynight').classList.toggle('active', sunEnabled);
+  if (!sunEnabled) {
+    _sunSphere.visible = false;
+    scene.background = new THREE.Color(0x0a0a12);
+    ambient.intensity = parseFloat(document.getElementById('ambient-slider').value);
+    sun.color.set(0xfff4cc);
+  }
+});
 
 document.getElementById('btn-daynightpause').addEventListener('click', () => {
   dayNightPaused = !dayNightPaused;
   document.getElementById('btn-daynightpause').textContent = dayNightPaused ? '▶' : '⏸';
+  controls.autoRotateSpeed = dayNightPaused ? 0 : rotSpeed * 300;
+});
+
+document.getElementById('btn-rain').addEventListener('click', () => {
+  const btn = document.getElementById('btn-rain');
+  if (rainSystem) { removeRain(); btn.classList.remove('active'); }
+  else { buildRain(); btn.classList.add('active'); }
 });
 
 document.getElementById('btn-fire').addEventListener('click', () => {
@@ -2126,13 +2186,6 @@ window.addEventListener('resize', () => {
 fetch('output/manifest.json')
   .then(r => r.json())
   .then(files => {
-    const sel = document.getElementById('model-select');
-    files.forEach(f => {
-      const opt = document.createElement('option');
-      opt.value = `output/${f}`;
-      opt.textContent = f.replace('.obj', '');
-      sel.appendChild(opt);
-    });
     if (files.length) loadModel(`output/${files[0]}`);
   })
   .catch(() => { status.textContent = 'Error: could not load output/manifest.json'; });
@@ -2197,6 +2250,38 @@ genSliders.forEach(([id, valId]) => {
   document.getElementById(id).addEventListener('input', e => {
     document.getElementById(valId).textContent = e.target.value;
   });
+});
+
+document.getElementById('scene-panel-header').addEventListener('click', () => {
+  const body = document.getElementById('scene-panel-body');
+  const arrow = document.getElementById('scene-toggle-arrow');
+  const collapsed = body.style.display === 'none';
+  body.style.display = collapsed ? 'flex' : 'none';
+  arrow.textContent = collapsed ? '▼' : '▶';
+});
+
+document.getElementById('sky-panel-header').addEventListener('click', () => {
+  const body = document.getElementById('sky-panel-body');
+  const arrow = document.getElementById('sky-toggle-arrow');
+  const collapsed = body.style.display === 'none';
+  body.style.display = collapsed ? 'flex' : 'none';
+  arrow.textContent = collapsed ? '▼' : '▶';
+});
+
+document.getElementById('events-panel-header').addEventListener('click', () => {
+  const body = document.getElementById('events-panel-body');
+  const arrow = document.getElementById('events-toggle-arrow');
+  const collapsed = body.style.display === 'none';
+  body.style.display = collapsed ? 'flex' : 'none';
+  arrow.textContent = collapsed ? '▼' : '▶';
+});
+
+document.getElementById('gen-panel-header').addEventListener('click', () => {
+  const body = document.getElementById('gen-panel-body');
+  const arrow = document.getElementById('gen-toggle-arrow');
+  const collapsed = body.style.display === 'none';
+  body.style.display = collapsed ? 'flex' : 'none';
+  arrow.textContent = collapsed ? '▼' : '▶';
 });
 
 document.getElementById('gen-voronoi').addEventListener('change', e => {
