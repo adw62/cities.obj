@@ -300,6 +300,7 @@
   <button class="mode-btn" id="btn-fire">Fire!</button>
   <button class="mode-btn" id="btn-ufo">UFO!</button>
   <button class="mode-btn" id="btn-tornado">Tornado!</button>
+  <button class="mode-btn" id="btn-birds">Birds</button>
 
   <div id="music-controls">
     <button class="mode-btn" id="music-prev">&#9664;&#9664;</button>
@@ -1332,6 +1333,244 @@ const UFO_SPAWN_INTERVAL = 600;
 let _ufoTimer = UFO_SPAWN_INTERVAL;
 let _ufo = null;
 
+// ── Boid bird flock ───────────────────────────────────────────────────────────
+let _birds = null;
+
+function _spawnBirds() {
+  if (!trafficData) return;
+  const sw = trafficData.street_width;
+
+  let maxX = 0, maxZ = 0;
+  for (const seg of trafficData.segments) {
+    maxX = Math.max(maxX, Math.abs(seg.start[0]), Math.abs(seg.end[0]));
+    maxZ = Math.max(maxZ, Math.abs(seg.start[2]), Math.abs(seg.end[2]));
+  }
+  const halfW = maxX || sw * 25, halfD = maxZ || sw * 25;
+  const flightH    = sw * 500;
+  const spd        = sw * 90;
+  const SEP_R      = sw * 150;
+  const NEIGHBOR_R = sw * 600;
+
+  const NC = 500, NB = 6000;
+  const spread = sw * 100;
+
+  // two shared flock-level wander targets — tune these to control spread
+  const _wStep   = sw * 500;
+  const _wanderX = halfW * 4;   // ± X range for both targets
+  const _wanderY = flightH * 2; // Y jitter around flightH
+  const _wanderZ = halfD * 4;    // ± Z range for both targets
+  function _randTargetA(b) {
+    b.wax = Math.max(-_wanderX, Math.min(_wanderX, b.wax + (Math.random()-0.5)*2*_wStep));
+    b.way = Math.max(flightH, flightH + (Math.random()-0.3)*_wanderY);
+    b.waz = Math.max(-_wanderZ, Math.min(_wanderZ, b.waz + (Math.random()-0.5)*2*_wStep));
+    b.waTimer = 16 + Math.random() * 10;
+  }
+  function _randTargetB(b) {
+    b.wbx = Math.max(-_wanderX, Math.min(_wanderX, b.wbx + (Math.random()-0.5)*2*_wStep));
+    b.wby = Math.max(flightH, flightH + (Math.random()-0.3)*_wanderY);
+    b.wbz = Math.max(-_wanderZ, Math.min(_wanderZ, b.wbz + (Math.random()-0.5)*2*_wStep));
+    b.wbTimer = 16 + Math.random() * 10;
+  }
+  function _randTargetC(b) {
+    b.wcx = Math.max(-_wanderX, Math.min(_wanderX, b.wcx + (Math.random()-0.5)*2*_wStep));
+    b.wcy = Math.max(flightH, flightH + (Math.random()-0.3)*_wanderY);
+    b.wcz = Math.max(-_wanderZ, Math.min(_wanderZ, b.wcz + (Math.random()-0.5)*2*_wStep));
+    b.wcTimer = 16 + Math.random() * 10;
+  }
+
+  const centers = [];
+  for (let i = 0; i < NC; i++) {
+    const ha = Math.random() * Math.PI * 2;
+    centers.push({
+      x: (Math.random() - 0.5) * halfW * 1.4,
+      y: flightH + Math.random() * flightH * 0.2,
+      z: (Math.random() - 0.5) * halfD * 1.4,
+      hx: Math.cos(ha), hy: 0, hz: Math.sin(ha),
+      neighbors: [],
+    });
+  }
+
+  // Per-bird offsets
+  const assign   = new Int32Array(NB);
+  const offX     = new Float32Array(NB);
+  const offY     = new Float32Array(NB);
+  const offZ     = new Float32Array(NB);
+  const tgtOX    = new Float32Array(NB);
+  const tgtOY    = new Float32Array(NB);
+  const tgtOZ    = new Float32Array(NB);
+  const offTimer = new Float32Array(NB);
+  for (let i = 0; i < NB; i++) {
+    assign[i]   = i % NC;
+    tgtOX[i]    = (Math.random() - 0.5) * spread * 0.1;
+    tgtOY[i]    = (Math.random() - 0.5) * spread * 0.1;
+    tgtOZ[i]    = (Math.random() - 0.5) * spread * 0.1;
+    offTimer[i] = Math.random() * 2;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  const pa  = new Float32Array(NB * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(pa, 3));
+  const mat = new THREE.PointsMaterial({ color: 0x111111, size: 0.1, sizeAttenuation: true });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  scene.add(pts);
+
+  _birds = { centers, pts, pa, assign, offX, offY, offZ, tgtOX, tgtOY, tgtOZ, offTimer,
+             wax: 0, way: 0, waz: 0, waTimer: 0,
+             wbx: 0, wby: 0, wbz: 0, wbTimer: 0,
+             wcx: 0, wcy: 0, wcz: 0, wcTimer: 0,
+             NC, NB, sw, halfW, halfD, flightH, spd, SEP_R, NEIGHBOR_R, spread,
+             _randTargetA, _randTargetB, _randTargetC, neighborTimer: 0 };
+  _randTargetA(_birds);
+  _randTargetB(_birds);
+  _birds.wbTimer += 2 + Math.random() * 3;
+  _randTargetC(_birds);
+  _birds.wcTimer += 4 + Math.random() * 3;
+}
+
+function _tickBirds(dt) {
+  if (!_birds) return;
+  const b = _birds;
+  const { centers, NC, NB, spd, SEP_R, NEIGHBOR_R, spread } = b;
+  const TURN = dt * 2.2;
+
+  // ── Refresh shared wander targets ────────────────────────────────────────
+  b.waTimer -= dt; if (b.waTimer <= 0) b._randTargetA(b);
+  b.wbTimer -= dt; if (b.wbTimer <= 0) b._randTargetB(b);
+  b.wcTimer -= dt; if (b.wcTimer <= 0) b._randTargetC(b);
+
+  // ── Rebuild neighbour lists periodically via spatial grid (XZ) ────────────
+  b.neighborTimer -= dt;
+  if (b.neighborTimer <= 0) {
+    b.neighborTimer = 0.3;
+    const cellSize = NEIGHBOR_R;
+    const grid = new Map();
+    for (let i = 0; i < NC; i++) {
+      const c = centers[i];
+      const key = `${Math.floor(c.x / cellSize)},${Math.floor(c.z / cellSize)}`;
+      let cell = grid.get(key);
+      if (!cell) { cell = []; grid.set(key, cell); }
+      cell.push(i);
+    }
+    const NR2 = NEIGHBOR_R * NEIGHBOR_R;
+    for (let i = 0; i < NC; i++) {
+      const c = centers[i];
+      const gx = Math.floor(c.x / cellSize);
+      const gz = Math.floor(c.z / cellSize);
+      const nbrs = [];
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oz = -1; oz <= 1; oz++) {
+          const cell = grid.get(`${gx+ox},${gz+oz}`);
+          if (!cell) continue;
+          for (const j of cell) {
+            if (j === i) continue;
+            const sx = c.x - centers[j].x, sz = c.z - centers[j].z;
+            if (sx*sx + sz*sz < NR2) nbrs.push(j);
+          }
+        }
+      }
+      c.neighbors = nbrs;
+    }
+  }
+
+  for (let i = 0; i < NC; i++) {
+    const c = centers[i];
+
+    // each center picks whichever shared target is closest in XZ
+    const da2 = (b.wax-c.x)**2 + (b.waz-c.z)**2;
+    const db2 = (b.wbx-c.x)**2 + (b.wbz-c.z)**2;
+    const dc2 = (b.wcx-c.x)**2 + (b.wcz-c.z)**2;
+    const wx = da2 <= db2 && da2 <= dc2 ? b.wax : db2 <= dc2 ? b.wbx : b.wcx;
+    const wy = da2 <= db2 && da2 <= dc2 ? b.way : db2 <= dc2 ? b.wby : b.wcy;
+    const wz = da2 <= db2 && da2 <= dc2 ? b.waz : db2 <= dc2 ? b.wbz : b.wcz;
+
+    const nbrs = c.neighbors;
+    let dx = 0, dy = 0, dz = 0;
+
+    if (nbrs.length > 0) {
+      // local centre of mass (cohesion)
+      let lcx = 0, lcy = 0, lcz = 0;
+      // average heading (alignment)
+      let lhx = 0, lhy = 0, lhz = 0;
+      // separation push
+      let sepX = 0, sepY = 0, sepZ = 0;
+
+      for (let k = 0; k < nbrs.length; k++) {
+        const n = centers[nbrs[k]];
+        lcx += n.x; lcy += n.y; lcz += n.z;
+        lhx += n.hx; lhy += n.hy; lhz += n.hz;
+        const sx = c.x - n.x, sy = c.y - n.y, sz = c.z - n.z;
+        const d = Math.hypot(sx, sy, sz);
+        if (d < SEP_R && d > 0) {
+          sepX += (sx / d) * (SEP_R - d) * 3;
+          sepY += (sy / d) * (SEP_R - d) * 3;
+          sepZ += (sz / d) * (SEP_R - d) * 3;
+        }
+      }
+      const cnt = nbrs.length;
+      lcx /= cnt; lcy /= cnt; lcz /= cnt;
+
+      const cohX = lcx - c.x, cohY = lcy - c.y, cohZ = lcz - c.z;
+      const cohL = Math.hypot(cohX, cohY, cohZ) || 1;
+
+      const alL = Math.hypot(lhx, lhy, lhz) || 1;
+      lhx /= alL; lhy /= alL; lhz /= alL;
+
+      dx = cohX/cohL * 0.4 + lhx * 0.4 + sepX + (wx - c.x) * 0.1;
+      dy = cohY/cohL * 0.4 + lhy * 0.4 + sepY * 0.05 + (wy - c.y) * 0.1;
+      dz = cohZ/cohL * 0.4 + lhz * 0.4 + sepZ + (wz - c.z) * 0.1;
+    } else {
+      dx = wx - c.x;
+      dy = wy - c.y;
+      dz = wz - c.z;
+    }
+
+    const dl = Math.hypot(dx, dy, dz) || 1e-9;
+    const nx = dx/dl, ny = dy/dl, nz = dz/dl;
+    c.hx += (nx - c.hx) * TURN;
+    c.hy += (ny - c.hy) * TURN;
+    c.hz += (nz - c.hz) * TURN;
+    const hl = Math.hypot(c.hx, c.hy, c.hz) || 1e-9;
+    c.hx /= hl; c.hy /= hl; c.hz /= hl;
+
+    c.x += c.hx * spd * dt;
+    c.y += c.hy * spd * dt;
+    c.z += c.hz * spd * dt;
+  }
+
+  // ── Update bird particles ─────────────────────────────────────────────────
+  const pa = b.pa;
+  for (let i = 0; i < NB; i++) {
+    b.offTimer[i] -= dt;
+    if (b.offTimer[i] <= 0) {
+      b.tgtOX[i] = (Math.random() - 0.5) * spread;
+      b.tgtOY[i] = (Math.random() - 0.5) * spread * 0.35;
+      b.tgtOZ[i] = (Math.random() - 0.5) * spread;
+      b.offTimer[i] = 0.8 + Math.random() * 1.4;
+    }
+    const lr = Math.min(1, dt * 2.5);
+    b.offX[i] += (b.tgtOX[i] - b.offX[i]) * lr;
+    b.offY[i] += (b.tgtOY[i] - b.offY[i]) * lr;
+    b.offZ[i] += (b.tgtOZ[i] - b.offZ[i]) * lr;
+
+    const c = centers[b.assign[i]];
+    pa[i*3]   = c.x + b.offX[i];
+    pa[i*3+1] = c.y + b.offY[i];
+    pa[i*3+2] = c.z + b.offZ[i];
+  }
+  b.pts.geometry.attributes.position.needsUpdate = true;
+
+}
+
+function _despawnBirds() {
+  if (!_birds) return;
+  scene.remove(_birds.pts);
+  _birds.pts.geometry.dispose();
+  _birds.pts.material.dispose();
+  _birds = null;
+  document.getElementById('btn-birds').classList.remove('active');
+}
+
 function _spawnUfoEvent() {
   if (!trafficData || !currentObj) return;
   const segs = trafficData.segments;
@@ -1759,6 +1998,7 @@ renderer.setAnimationLoop(() => {
   _tickFire(dt);
   _tickUfo(dt);
   _tickTornado(dt);
+  _tickBirds(dt);
   renderer.render(scene, camera);
 });
 
@@ -1856,6 +2096,11 @@ document.getElementById('btn-ufo').addEventListener('click', () => {
 
 document.getElementById('btn-tornado').addEventListener('click', () => {
   if (!_tornado) _spawnTornadoEvent();
+});
+
+document.getElementById('btn-birds').addEventListener('click', () => {
+  if (_birds) { _despawnBirds(); }
+  else { _spawnBirds(); document.getElementById('btn-birds').classList.add('active'); }
 });
 
 document.getElementById('btn-cars').addEventListener('click', () => {
