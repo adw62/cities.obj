@@ -302,7 +302,7 @@
     <button class="mode-btn" id="btn-daynight" style="width:100%">Sky</button>
     <div class="panel-section">
       <label>Clouds <span id="cloud-count-val">0</span></label>
-      <input type="range" id="cloud-count" min="0" max="60" step="1" value="0" style="width:100%">
+      <input type="range" id="cloud-count" min="0" max="20" step="1" value="0" style="width:100%">
     </div>
     <div class="panel-section">
       <label>Planets <span id="planet-count-val">0</span></label>
@@ -450,53 +450,147 @@ scene.add(_sunSphere);
   scene.add(new THREE.Points(geo, window._starMat));
 }
 
-// ── Clouds ────────────────────────────────────────────────
-function _makeCloudTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = 256;
-  const ctx = canvas.getContext('2d');
-  const blobs = [
-    { x: 128, y: 138, r: 72 },
-    { x:  72, y: 148, r: 52 },
-    { x: 185, y: 145, r: 58 },
-    { x: 108, y: 100, r: 46 },
-    { x: 158, y:  96, r: 42 },
-    { x:  55, y: 118, r: 34 },
-    { x: 200, y: 118, r: 36 },
-  ];
-  for (const b of blobs) {
-    const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
-    g.addColorStop(0,   'rgba(255,255,255,0.95)');
-    g.addColorStop(0.4, 'rgba(255,255,255,0.6)');
-    g.addColorStop(1,   'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-    ctx.fill();
+// ── Volumetric clouds ─────────────────────────────────────
+// ── Gaussian splat clouds ─────────────────────────────────
+function _makeGaussTex(sigma = 0.42) {
+  const S = 128, h = S / 2;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(S, S);
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const dx = (x - h) / h, dy = (y - h) / h;
+      const a = Math.exp(-(dx*dx + dy*dy) / (2*sigma*sigma));
+      const i = (y*S + x)*4;
+      img.data[i] = img.data[i+1] = img.data[i+2] = 255;
+      img.data[i+3] = Math.round(a * 255);
+    }
   }
-  return new THREE.CanvasTexture(canvas);
+  ctx.putImageData(img, 0, 0);
+  return new THREE.CanvasTexture(c);
 }
 
-const _cloudTex = _makeCloudTexture();
+function _cloudGraph(n) {
+  const SC = 1;
+  const nodes = Array.from({ length: n }, () => new THREE.Vector3(
+    (Math.random()-0.5)*100*SC, (Math.random()-0.5)*30*SC, (Math.random()-0.5)*70*SC
+  ));
+  const edges = [], inTree = new Set([0]);
+  while (inTree.size < n) {
+    let best = null, bestDist = Infinity;
+    for (const a of inTree) for (let b = 0; b < n; b++) {
+      if (inTree.has(b)) continue;
+      const d = nodes[a].distanceTo(nodes[b]);
+      if (d < bestDist) { bestDist = d; best = [a, b]; }
+    }
+    edges.push(best); inTree.add(best[1]);
+  }
+  const extras = 1 + Math.floor(Math.random()*3);
+  for (let e = 0; e < extras; e++) {
+    const a = Math.floor(Math.random()*n);
+    let b = Math.floor(Math.random()*(n-1)); if (b >= a) b++;
+    if (!edges.some(([ea,eb]) => (ea===a&&eb===b)||(ea===b&&eb===a))) edges.push([a,b]);
+  }
+  return { nodes, edges };
+}
+
+function _layoutGraph(nodes, edges) {
+  const SC = 1;
+  const n = nodes.length, vel = nodes.map(()=>new THREE.Vector3()), f = nodes.map(()=>new THREE.Vector3()), tmp = new THREE.Vector3();
+  for (let iter = 0; iter < 200; iter++) {
+    for (const fi of f) fi.set(0,0,0);
+    for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) {
+      tmp.subVectors(nodes[i], nodes[j]);
+      const dist = Math.max(tmp.length(), 0.5), mag = 2200 / (dist*dist);
+      tmp.normalize().multiplyScalar(mag); f[i].add(tmp); f[j].sub(tmp);
+    }
+    for (const [a,b] of edges) {
+      tmp.subVectors(nodes[b], nodes[a]);
+      const mag = 0.09 * (tmp.length() - 55*SC);
+      tmp.normalize().multiplyScalar(mag); f[a].add(tmp); f[b].sub(tmp);
+    }
+    for (let i = 0; i < n; i++) { vel[i].addScaledVector(f[i], 0.1).multiplyScalar(0.87); nodes[i].add(vel[i]); }
+  }
+  for (const p of nodes) p.y *= 0.48;
+}
+
+function _cloudBeads(nodes, edges) {
+  const SC = 3, beads = [];
+  for (const p of nodes) {
+    const r = (18 + Math.random()*12)*SC;
+    beads.push({ center: p.clone(), radius: r });
+    if (Math.random() > 0.35) {
+      const jit = new THREE.Vector3((Math.random()-.5)*r*.7,(Math.random()-.5)*r*.35,(Math.random()-.5)*r*.7);
+      beads.push({ center: p.clone().add(jit), radius: r*(0.45+Math.random()*0.4) });
+    }
+  }
+  for (const [a,b] of edges) {
+    const pa = nodes[a], pb = nodes[b], dist = pa.distanceTo(pb);
+    const steps = Math.max(1, Math.floor(dist/(12*SC)));
+    const ra = beads.find(bd => bd.center.equals(pa))?.radius ?? 20*SC;
+    const rb = beads.find(bd => bd.center.equals(pb))?.radius ?? 20*SC;
+    for (let i = 1; i < steps; i++) {
+      const t = i/steps, r = THREE.MathUtils.lerp(ra,rb,t)*(0.5+Math.random()*0.35);
+      const jit = new THREE.Vector3((Math.random()-.5)*21,(Math.random()-.5)*12,(Math.random()-.5)*21);
+      beads.push({ center: pa.clone().lerp(pb,t).add(jit), radius: r });
+    }
+  }
+  return beads;
+}
+
+function _sampleSphere(center, radius, out) {
+  let x, y, z;
+  do { x=(Math.random()*2-1)*radius; y=(Math.random()*2-1)*radius; z=(Math.random()*2-1)*radius; }
+  while (x*x+y*y+z*z > radius*radius);
+  return out.set(center.x+x, center.y+y, center.z+z);
+}
+
+const _GAUSS_TEX = _makeGaussTex();
 let _clouds = [];
 
+function _buildCloud(cx, cy, cz) {
+  const { nodes, edges } = _cloudGraph(5 + Math.floor(Math.random()*4));
+  _layoutGraph(nodes, edges);
+  const offset = new THREE.Vector3(cx, cy, cz);
+  for (const p of nodes) p.add(offset);
+  const beads = _cloudBeads(nodes, edges);
+  const totalVol = beads.reduce((s,b) => s + b.radius**3, 0);
+  const pos = new THREE.Vector3(), splats = [];
+  const numSplats = 180 + Math.floor(Math.random()*80);
+  for (let i = 0; i < numSplats; i++) {
+    let pick = Math.random()*totalVol, bead;
+    for (bead of beads) { pick -= bead.radius**3; if (pick <= 0) break; }
+    _sampleSphere(bead.center, bead.radius, pos);
+    const baseW  = (8 + Math.random()*17)*3;
+    const aspect = 0.45 + Math.random()*1.05;
+    const opac   = 0.038 + Math.random()*0.105;
+    const heightT = (pos.y - cy + 50) / 100;
+    const bright  = 0.84 + Math.random()*0.16 + heightT*0.04;
+    const blueShft = Math.random()*0.06;
+    const mat = new THREE.SpriteMaterial({
+      map: _GAUSS_TEX, transparent: true, depthWrite: false, opacity: opac,
+      color: new THREE.Color(Math.min(1,bright), Math.min(1,bright), Math.min(1,bright+blueShft)),
+    });
+    mat.rotation = Math.random()*Math.PI;
+    const sprite = new THREE.Sprite(mat);
+    sprite.position.copy(pos);
+    sprite.scale.set(baseW, baseW*aspect, 1);
+    scene.add(sprite);
+    splats.push({ sprite, mat, opac, bright, blueShft });
+  }
+  return splats;
+}
+
 function _spawnClouds() {
-  for (const c of _clouds) { scene.remove(c.sprite); c.mat.dispose(); }
+  for (const c of _clouds) for (const { sprite, mat } of c.splats) { scene.remove(sprite); mat.dispose(); }
   _clouds = [];
   const count = parseInt(document.getElementById('cloud-count').value);
-  const spread = 700, altBase = 130, altVar = 50;
   for (let i = 0; i < count; i++) {
-    const mat = new THREE.SpriteMaterial({ map: _cloudTex, transparent: true, opacity: 0.45 + Math.random() * 0.35, depthWrite: false });
-    const sprite = new THREE.Sprite(mat);
-    const w = 120 + Math.random() * 160;
-    sprite.scale.set(w, w * 0.38, 1);
-    sprite.position.set(
-      (Math.random() - 0.5) * spread * 2,
-      altBase + (Math.random() - 0.5) * altVar,
-      (Math.random() - 0.5) * spread * 2
-    );
-    scene.add(sprite);
-    _clouds.push({ sprite, mat, driftX: (Math.random() - 0.5) * 1.5, driftZ: (Math.random() - 0.5) * 1.5 });
+    const cx = (Math.random()-0.5)*1400, cz = (Math.random()-0.5)*1400;
+    const cy = 130 + Math.random()*50;
+    const splats = _buildCloud(cx, cy, cz);
+    _clouds.push({ splats, driftX:(Math.random()-0.5)*1.5, driftZ:(Math.random()-0.5)*1.5 });
   }
 }
 _spawnClouds();
@@ -506,26 +600,225 @@ fillLight.position.set(-80, 20, -60);
 scene.add(fillLight);
 
 
+// ── Planet canvas textures ────────────────────────────────
+function _makePlanetTex(hue) {
+  const S = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d');
+  const col = (h, s, l, a = 1) => `hsla(${(h % 1) * 360},${s}%,${l}%,${a})`;
+  ctx.fillStyle = col(hue, 65, 42);
+  ctx.fillRect(0, 0, S, S);
+  // Horizontal atmospheric bands
+  const bands = 6 + Math.floor(Math.random() * 6);
+  for (let i = 0; i < bands; i++) {
+    const y = (i / bands) * S;
+    const bh = S / bands * (0.4 + Math.random() * 0.8);
+    const dh = (Math.random() - 0.5) * 0.15;
+    const dl = 30 + Math.random() * 40;
+    const grad = ctx.createLinearGradient(0, y, 0, y + bh);
+    grad.addColorStop(0,   col(hue + dh, 70, dl, 0));
+    grad.addColorStop(0.5, col(hue + dh, 70, dl, 0.85));
+    grad.addColorStop(1,   col(hue + dh, 70, dl, 0));
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, y, S, bh);
+  }
+  // Highlight bands — wide soft stripes of a lighter/complementary hue under the swirls
+  const hBands = 3 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < hBands; i++) {
+    const y = Math.random() * S;
+    const bh = 8 + Math.random() * 20;
+    const dh = 0.08 + Math.random() * 0.18; // shift toward complementary
+    const grad = ctx.createLinearGradient(0, y, 0, y + bh);
+    grad.addColorStop(0,   col(hue + dh, 80, 78, 0));
+    grad.addColorStop(0.5, col(hue + dh, 80, 78, 0.28));
+    grad.addColorStop(1,   col(hue + dh, 80, 78, 0));
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, y, S, bh);
+  }
+  // Swirl details — sine-wavy horizontal strokes
+  for (let y = 0; y < S; y += 3) {
+    const amp = 4 + Math.random() * 8;
+    const periods = 2 + Math.floor(Math.random() * 5); // integer cycles → seamless wrap
+    const freq = periods / S;
+    ctx.beginPath();
+    for (let x = 0; x <= S; x++) {
+      const yy = y + Math.sin(x * freq * Math.PI * 2) * amp;
+      x === 0 ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy);
+    }
+    ctx.strokeStyle = col(hue + (Math.random() - 0.5) * 0.1, 60, 55 + Math.random() * 20, 0.32);
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  // Cloud noise — scattered white blobs in a horizontal band pattern
+  const cloudRows = 18 + Math.floor(Math.random() * 12);
+  for (let i = 0; i < cloudRows; i++) {
+    const cy = Math.random() * S;
+    const blobs = 6 + Math.floor(Math.random() * 10);
+    for (let j = 0; j < blobs; j++) {
+      const cx = Math.random() * S;
+      const r  = 3 + Math.random() * 9;
+      const g  = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      g.addColorStop(0,   `rgba(255,255,255,${0.06 + Math.random() * 0.10})`);
+      g.addColorStop(1,   'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+    }
+  }
+  // Polar highlight
+  const pg = ctx.createRadialGradient(S / 2, 4, 0, S / 2, 4, S * 0.38);
+  pg.addColorStop(0, 'rgba(255,255,255,0.55)');
+  pg.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = pg;
+  ctx.fillRect(0, 0, S, S);
+  const tex = new THREE.CanvasTexture(c);
+  return tex;
+}
+
+
+// ── Rocky planet textures ─────────────────────────────────
+function _makeRockyTex(hue, seed) {
+  const S = 256;
+  // Seeded pseudo-random via simple hash
+  let _s = seed | 0;
+  function rng() { _s = (_s * 1664525 + 1013904223) & 0xffffffff; return (_s >>> 0) / 0xffffffff; }
+  // 3D value noise — seamless horizontal wrapping by sampling on a cylinder
+  function hash3(ix, iy, iz) {
+    let h = (ix * 374761393 ^ iy * 668265263 ^ iz * 1013904223) + ((_s * 982451653) | 0);
+    h = ((h ^ (h >>> 13)) * 1274126177) | 0;
+    return ((h >>> 0) & 0x7fffffff) / 0x7fffffff;
+  }
+  function noise3(x, y, z) {
+    const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+    const fx = x-xi, fy = y-yi, fz = z-zi;
+    const ux = fx*fx*(3-2*fx), uy = fy*fy*(3-2*fy), uz = fz*fz*(3-2*fz);
+    const v000=hash3(xi,yi,zi), v100=hash3(xi+1,yi,zi), v010=hash3(xi,yi+1,zi), v110=hash3(xi+1,yi+1,zi);
+    const v001=hash3(xi,yi,zi+1), v101=hash3(xi+1,yi,zi+1), v011=hash3(xi,yi+1,zi+1), v111=hash3(xi+1,yi+1,zi+1);
+    return v000*(1-ux)*(1-uy)*(1-uz)+v100*ux*(1-uy)*(1-uz)+v010*(1-ux)*uy*(1-uz)+v110*ux*uy*(1-uz)
+          +v001*(1-ux)*(1-uy)*uz+v101*ux*(1-uy)*uz+v011*(1-ux)*uy*uz+v111*ux*uy*uz;
+  }
+  // FBM helper: px∈[0,1] maps to a circle so left/right edges are seamless
+  function makeFbm(scale, octaves) {
+    const r = scale / (Math.PI * 2);
+    const sz = scale * 0.8;
+    return (px, py) => {
+      const cx = Math.cos(px * Math.PI * 2) * r;
+      const cy = Math.sin(px * Math.PI * 2) * r;
+      const cz = py * sz;
+      let v = 0, amp = 0.5, freq = 1, max = 0;
+      for (let o = 0; o < octaves; o++) {
+        v += noise3(cx*freq, cy*freq, cz*freq) * amp;
+        max += amp; amp *= 0.5; freq *= 2.1;
+      }
+      return v / max;
+    };
+  }
+  // Primary heightmap — lower frequency (larger features)
+  const scale = 8 + rng() * 5;
+  const fbm = makeFbm(scale, 6);
+  // Secondary flat highlight layer — even lower frequency, fewer octaves
+  const fbmHi = makeFbm(scale * 0.35, 3);
+  // Build heightmap + highlight map
+  const hmap = new Float32Array(S * S);
+  const himap = new Float32Array(S * S);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    hmap[y * S + x]  = fbm(x / S, y / S);
+    himap[y * S + x] = fbmHi(x / S, y / S);
+  }
+  // Colour palette: reds/greys — dark rusty valleys → ochre-red plains → pale grey highlands
+  const redBias = 0.5 + hue * 0.5;
+  // Highlight colour: warm sandy-cream for red planets, cool blue-white for grey
+  const hiR = redBias * 0.92 + (1 - redBias) * 0.78;
+  const hiG = redBias * 0.78 + (1 - redBias) * 0.84;
+  const hiB = redBias * 0.55 + (1 - redBias) * 0.92;
+  const col = (h, hi) => {
+    const lo  = { r: 0.18 + redBias * 0.10, g: 0.08,                        b: 0.06 };
+    const mid = { r: 0.55 + redBias * 0.12, g: 0.22 + (1 - redBias) * 0.10, b: 0.18 + (1 - redBias) * 0.10 };
+    const hih = { r: 0.70 + (1 - redBias) * 0.08, g: 0.65 + (1 - redBias) * 0.08, b: 0.65 + (1 - redBias) * 0.08 };
+    const t1 = Math.min(1, Math.max(0, h / 0.45));
+    const t2 = Math.min(1, Math.max(0, (h - 0.45) / 0.55));
+    let r = lo.r + (mid.r - lo.r) * t1 + (hih.r - mid.r) * t2;
+    let g = lo.g + (mid.g - lo.g) * t1 + (hih.g - mid.g) * t2;
+    let b = lo.b + (mid.b - lo.b) * t1 + (hih.b - mid.b) * t2;
+    // blend in flat highlight patches where secondary noise peaks
+    const blend = Math.max(0, (hi - 0.62) / 0.28);
+    r = r + (hiR - r) * blend;
+    g = g + (hiG - g) * blend;
+    b = b + (hiB - b) * blend;
+    return [Math.min(255, r * 255), Math.min(255, g * 255), Math.min(255, b * 255)];
+  };
+  // Diffuse map canvas
+  const dc = document.createElement('canvas'); dc.width = dc.height = S;
+  const dctx = dc.getContext('2d');
+  const dimg = dctx.createImageData(S, S);
+  for (let i = 0; i < S * S; i++) {
+    const [r, g, b] = col(hmap[i], himap[i]);
+    dimg.data[i * 4]     = r;
+    dimg.data[i * 4 + 1] = g;
+    dimg.data[i * 4 + 2] = b;
+    dimg.data[i * 4 + 3] = 255;
+  }
+  dctx.putImageData(dimg, 0, 0);
+  // Normal map canvas — derive from heightmap gradient
+  const nc = document.createElement('canvas'); nc.width = nc.height = S;
+  const nctx = nc.getContext('2d');
+  const nimg = nctx.createImageData(S, S);
+  const strength = 32;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const xm = hmap[y * S + Math.max(0, x - 1)];
+    const xp = hmap[y * S + Math.min(S - 1, x + 1)];
+    const ym = hmap[Math.max(0, y - 1) * S + x];
+    const yp = hmap[Math.min(S - 1, y + 1) * S + x];
+    const dx = (xp - xm) * strength;
+    const dy = (yp - ym) * strength;
+    const len = Math.sqrt(dx * dx + dy * dy + 1);
+    const nx = -dx / len, ny = -dy / len, nz = 1 / len;
+    const idx = (y * S + x) * 4;
+    nimg.data[idx]     = (nx * 0.5 + 0.5) * 255;
+    nimg.data[idx + 1] = (ny * 0.5 + 0.5) * 255;
+    nimg.data[idx + 2] = (nz * 0.5 + 0.5) * 255;
+    nimg.data[idx + 3] = 255;
+  }
+  nctx.putImageData(nimg, 0, 0);
+  return { map: new THREE.CanvasTexture(dc), normalMap: new THREE.CanvasTexture(nc) };
+}
+
 // ── Sky: planets ──────────────────────────────────────────
 let _solarPlanets = [];
 
 function _spawnPlanets() {
-  for (const p of _solarPlanets) { scene.remove(p.mesh); p.mesh.geometry.dispose(); p.mesh.material.dispose(); }
+  for (const p of _solarPlanets) {
+    scene.remove(p.mesh);
+    p.mesh.geometry.dispose();
+    if (p.mesh.material.map) p.mesh.material.map.dispose();
+    if (p.mesh.material.normalMap) p.mesh.material.normalMap.dispose();
+    p.mesh.material.dispose();
+  }
   _solarPlanets = [];
   const count = parseInt(document.getElementById('planet-count').value);
   const hueStep = 1 / (count || 1);
   for (let i = 0; i < count; i++) {
-    const r      = 6  + Math.random() * 30;
     const orbitR = 300 + Math.random() * 1200;
     const speed  = 0.0005 + Math.random() * 0.003;
     const tilt   = (Math.random() - 0.5) * 0.6;
     const zOff   = (Math.random() - 0.5) * 150;
     const angle  = Math.random() * Math.PI * 2;
-    const color  = new THREE.Color().setHSL((i * hueStep + Math.random() * 0.1) % 1, 0.7, 0.6);
-    const mesh   = new THREE.Mesh(
-      new THREE.SphereGeometry(r, 24, 24),
-      new THREE.MeshPhongMaterial({ color, shininess: 15 })
-    );
+    let mat, r;
+    if (Math.random() < 0.25) {
+      // Gas planet — rare, large; blues, greens, yellows: hue 0.12–0.65
+      r = 28 + Math.random() * 40;
+      const gasHue = 0.12 + Math.random() * 0.53;
+      const color  = new THREE.Color().setHSL(gasHue, 0.75, 0.58);
+      mat = new THREE.MeshPhongMaterial({ color, map: _makePlanetTex(gasHue), shininess: 20 });
+    } else {
+      // Rocky planet — common, small; reds and greys
+      r = 5 + Math.random() * 14;
+      const rockyHue = Math.random() < 0.6 ? Math.random() * 0.08 : 0.55 + Math.random() * 0.08;
+      const { map, normalMap } = _makeRockyTex(rockyHue, Math.random() * 99999);
+      const color = new THREE.Color().setHSL(rockyHue, rockyHue < 0.1 ? 0.45 : 0.10, 0.40);
+      mat = new THREE.MeshPhongMaterial({ color, map, normalMap, shininess: 5 });
+    }
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 32), mat);
     scene.add(mesh);
     _solarPlanets.push({ mesh, r, orbitR, speed, tilt, zOff, angle });
   }
@@ -2169,8 +2462,18 @@ renderer.setAnimationLoop(() => {
     const sunY = Math.sin(flyT);
     sun.position.set(Math.cos(flyT) * 400, sunY * 400, 0);
     window._starMat.opacity = sunEnabled ? Math.max(0, Math.min(1, (-sunY - 0.2) / 0.4)) : 0;
-    for (const c of _clouds) {
-      if (!dayNightPaused) { c.sprite.position.x += c.driftX * dt; c.sprite.position.z += c.driftZ * dt; }
+    {
+      const _sy   = Math.sin(flyT);
+      const _dayT = Math.max(0, _sy);
+      const _sset = Math.exp(-(_sy*_sy)/(0.25*0.25));
+      const cr = 1, cg = sunEnabled ? Math.max(0.5, 0.55+_dayT*0.45-_sset*0.25) : 0.62;
+      const cb = sunEnabled ? Math.max(0.3, 0.38+_dayT*0.62-_sset*0.45) : 0.42;
+      for (const c of _clouds) {
+        for (const { sprite, mat, bright, blueShft } of c.splats) {
+          if (!dayNightPaused) { sprite.position.x += c.driftX*dt; sprite.position.z += c.driftZ*dt; }
+          mat.color.setRGB(Math.min(1,bright*cr), Math.min(1,bright*cg), Math.min(1,(bright+blueShft)*cb));
+        }
+      }
     }
 
     if (sunEnabled) {
