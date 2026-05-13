@@ -39,29 +39,50 @@ python -m http.server 8000
 
 Then open `http://localhost:8000/` in your browser.
 
-The dropdown is populated from `output/manifest.json`. Add a filename to that list after generating a new model and it will appear on the next page refresh.
+The first city found in `output/manifest.json` loads automatically.
 
-### Viewer modes
-
-| Mode | Description |
-|------|-------------|
-| **Orbit** | Free camera with mouse orbit / zoom |
-| **Day/Night** | Animated sun arc with dynamic warm/cool lighting |
-| **Rain** | Particle rain effect with slow city rotation |
-| **Wireframe** | Transparent mesh with adjustable edge opacity |
-
-### Right panel controls
+### Top bar
 
 | Control | Description |
 |---------|-------------|
-| **Base Color** | Color of the ground base plate |
-| **Building Color** | Color of all buildings |
-| **Road Color** | Color of boulevards and highways |
-| **Depth Fog** | Toggle exponential distance fog; density slider controls falloff |
-| **Rotation Speed** | Auto-rotation speed |
-| **Ambient Light** | Scene ambient light intensity |
-| **Wire Opacity** | Edge opacity in Wireframe mode |
-| **Cars** | Toggle traffic simulation on/off; slider sets car count |
+| **⏸ / ▶** | Pause / resume all time-based animation (sun, planets, rotation) |
+| **Free Cam** | Toggle FPS free camera — WASD move, mouse look, Q/E up/down, Shift slow, Esc exit |
+| Music controls | Play/pause background music, track skip, volume |
+
+### Left panels (all collapsible)
+
+**Generate City** — build a city directly in the browser without running Python. All generator options available; result can be downloaded as an `.obj`.
+
+**Events**
+
+| Control | Description |
+|---------|-------------|
+| **Cars** | Toggle traffic simulation; slider sets vehicle count |
+| **Rain** | Particle rain |
+| **Fire** | Fire event on a random building |
+| **UFO** | UFO abduction event |
+| **Tornado** | Tornado sweeping through the city |
+| **Birds** | Flocking boid bird simulation |
+
+**Sky**
+
+| Control | Description |
+|---------|-------------|
+| **Sky** | Toggle the full skybox — animated sun arc, dynamic sky colour, stars, and planets |
+| **Clouds** | Slider (0–60) spawns billboard sprite clouds that drift slowly; independent of Sky toggle |
+| **Planets** | Slider (0–12) spawns randomly coloured orbiting planets |
+| **Time of Day** | Scrub the sun position manually |
+| **Time of Year** | Scrub planet orbital positions |
+
+**Scene**
+
+| Control | Description |
+|---------|-------------|
+| **Base / Building / Road Color** | Per-layer colour pickers |
+| **Fog** | Toggle exponential depth fog; density slider |
+| **Rotation Speed** | City auto-rotation speed |
+| **Ambient Light** | Scene ambient intensity |
+| **Wireframe** | Toggle edge wireframe overlay; opacity slider |
 
 ### In-browser generator
 
