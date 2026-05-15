@@ -1169,6 +1169,7 @@ controls.autoRotateSpeed = 0;
 let roofColor    = new THREE.Color(0x66aaee);
 let windowColor  = new THREE.Color(0x2f6aaa);
 let wallColor    = new THREE.Color(0x4488cc);
+let _windowMat   = null;
 
 function colorKey(name) {
   if (name === 'base_plate') return 'base';
@@ -2606,7 +2607,7 @@ const COLOR_KEYS = ['base', 'road', 'building', 'wall', 'window', 'roof'];
 function updateColors() {
   if (!currentObj) return;
   currentObj.traverse(c => {
-    if (!c.userData.colorKey || !c.material) return;
+    if (!c.userData.colorKey || !c.material || !c.material.color || c.userData.isEmissiveOverlay) return;
     c.material.color.copy(colorFor(c.userData.colorKey));
   });
 }
@@ -2694,6 +2695,12 @@ renderer.setAnimationLoop(() => {
     }
     // directional light always follows flyT
     const sunY = Math.sin(flyT);
+    if (_windowMat) {
+      _windowMat.uniforms.uTime.value  += dt;
+      _windowMat.uniforms.uNight.value  = sunEnabled
+        ? Math.max(0, Math.min(1, (0.12 - sunY) / 0.35))
+        : 0;
+    }
     sun.position.set(Math.cos(flyT) * 400, sunY * 400, 0);
     window._starMat.opacity = sunEnabled ? Math.max(0, Math.min(1, (-sunY - 0.2) / 0.4)) : 0;
     {
@@ -3081,7 +3088,70 @@ document.getElementById('btn-generate').addEventListener('click', () => {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       geo.computeVertexNormals();
-      const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: colorFor(key), side: THREE.DoubleSide }));
+      let mat;
+      if (key === 'window') {
+        mat = new THREE.MeshPhongMaterial({ color: colorFor('window'), shininess: 80, specular: new THREE.Color(0x4466aa), side: THREE.DoubleSide });
+        const emissiveMat = new THREE.ShaderMaterial({
+          uniforms: { uTime: { value: 0 }, uNight: { value: 0 } },
+          vertexShader: `
+            varying vec3 vWorldPos;
+            void main() {
+              vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }`,
+          fragmentShader: `
+            varying vec3 vWorldPos;
+            uniform float uTime;
+            uniform float uNight;
+            float winHash(vec3 p) {
+              vec3 q = floor(p);
+              return fract(sin(dot(q, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+            }
+            void main() {
+              float wh = winHash(vWorldPos);
+              // small floor-preference blocks: finer XZ, coarser Y so groups span 1-2 floors
+              vec3 floorCell = floor(vec3(vWorldPos.x * 2.5, vWorldPos.y * 0.6, vWorldPos.z * 2.5));
+              float bh = fract(sin(dot(floorCell, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+              float bPeriod = 200.0 + bh * 400.0;
+              float bSlot = floor(uTime / bPeriod);
+              float bSlotHash = fract(sin(dot(vec2(bh * 131.7, bSlot), vec2(127.1, 311.7))) * 43758.5453);
+              float blockLit = step(0.78, bSlotHash);
+              // lone windows: fine grid, more common
+              float fineH = fract(sin(dot(floor(vWorldPos * 3.0), vec3(211.3, 97.7, 341.1))) * 43758.5453);
+              float fPeriod = 250.0 + fineH * 450.0;
+              float fSlot = floor(uTime / fPeriod);
+              float fSlotHash = fract(sin(dot(vec2(fineH * 173.1, fSlot), vec2(311.7, 127.1))) * 43758.5453);
+              float loneLit = step(0.80, fSlotHash);
+              float lit = max(blockLit, loneLit) * step(0.2, wh);
+              vec3 bq = floor(vWorldPos / 20.0);
+              float buildingH = fract(sin(dot(bq, vec3(191.3, 463.7, 217.1))) * 43758.5453);
+              float buildingBright = mix(0.65, 0.8, buildingH);
+              float windowBright = mix(0.9, 1.0, wh);
+              float onThresh = mix(0.08, 0.92, wh);
+              float nightFactor = smoothstep(onThresh - 0.06, onThresh + 0.06, uNight);
+              float em = lit * nightFactor * pow(uNight, 0.4) * buildingBright * windowBright;
+              vec3 warm  = vec3(1.0, 0.65, 0.2);
+              vec3 white = vec3(0.95, 0.95, 1.0);
+              vec3 col = mix(warm, white, step(0.5, buildingH));
+              gl_FragColor = vec4(col * em, 1.0);
+            }`,
+          transparent: true,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          depthTest: true,
+          polygonOffset: true,
+          polygonOffsetFactor: -1,
+          polygonOffsetUnits: -1,
+          side: THREE.DoubleSide,
+        });
+        _windowMat = emissiveMat;
+        const emissiveMesh = new THREE.Mesh(geo, emissiveMat);
+        emissiveMesh.userData.isEmissiveOverlay = true;
+        group.add(emissiveMesh);
+      } else {
+        mat = new THREE.MeshLambertMaterial({ color: colorFor(key), side: THREE.DoubleSide });
+      }
+      const mesh = new THREE.Mesh(geo, mat);
       mesh.userData.colorKey = key;
       group.add(mesh);
     }
