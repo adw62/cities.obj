@@ -301,12 +301,12 @@
   <div id="sky-panel-body" style="display:none;flex-direction:column;gap:8px;">
     <button class="mode-btn" id="btn-daynight" style="width:100%">Sky</button>
     <div class="panel-section">
-      <label>Clouds <span id="cloud-count-val">0</span></label>
-      <input type="range" id="cloud-count" min="0" max="20" step="1" value="0" style="width:100%">
+      <label>Clouds <span id="cloud-count-val">5</span></label>
+      <input type="range" id="cloud-count" min="0" max="20" step="1" value="5" style="width:100%">
     </div>
     <div class="panel-section">
-      <label>Planets <span id="planet-count-val">0</span></label>
-      <input type="range" id="planet-count" min="0" max="12" step="1" value="0" style="width:100%">
+      <label>Planets <span id="planet-count-val">3</span></label>
+      <input type="range" id="planet-count" min="0" max="12" step="1" value="3" style="width:100%">
     </div>
     <div class="panel-section">
       <label>Time of Day</label>
@@ -347,7 +347,7 @@
     </div>
     <div class="panel-section">
       <label>Rotation Speed</label>
-      <input type="range" id="speed-slider" min="0" max="0.05" step="0.001" value="0.0015">
+      <input type="range" id="speed-slider" min="0" max="0.05" step="0.001" value="0">
     </div>
     <div class="panel-section">
       <label>Ambient Light</label>
@@ -1003,6 +1003,7 @@ function _spawnPlanets() {
     _solarPlanets.push({ mesh, r, orbitR, speed, tilt, zOff, angle, moons, doomedMoon: moons._doomed || null });
   }
 }
+_spawnPlanets();
 
 function _tickSolar(dt) {
   for (const p of _solarPlanets) {
@@ -1147,16 +1148,16 @@ document.getElementById('btn-freecam').addEventListener('click', () => {
 let currentObj = null;
 let rainSystem = null;
 let mode = 'default';
-let sunEnabled = false;
+let sunEnabled = true;
 let wireEnabled = false;
 let modelColor = new THREE.Color(0x4488cc);
 let baseColor  = new THREE.Color(0x1a1a2e);
 let roadColor  = new THREE.Color(0x334455);
 let fogEnabled = false;
 let fogDensity = 0.015;
-let rotSpeed = 0.0015;
+let rotSpeed = 0;
 
-controls.autoRotateSpeed = rotSpeed * 300;
+controls.autoRotateSpeed = 0;
 
 function colorKey(name) {
   if (name === 'base_plate') return 'base';
@@ -2807,11 +2808,16 @@ document.getElementById('planet-count').addEventListener('input', e => {
 document.getElementById('tod-slider').addEventListener('input', e => {
   flyT = parseFloat(e.target.value) * Math.PI * 2;
   dayNightPaused = true;
+  document.getElementById('btn-daynightpause').textContent = '▶';
+  controls.autoRotateSpeed = 0;
 });
 
 let _yearAngle = 0;
 document.getElementById('toy-slider').addEventListener('input', e => {
   _yearAngle = parseFloat(e.target.value) * Math.PI * 2;
+  dayNightPaused = true;
+  document.getElementById('btn-daynightpause').textContent = '▶';
+  controls.autoRotateSpeed = 0;
 });
 
 
@@ -2820,6 +2826,8 @@ document.getElementById('btn-wireframe').addEventListener('click', () => {
   document.getElementById('btn-wireframe').classList.toggle('active', wireEnabled);
   applyWireframe();
 });
+
+document.getElementById('btn-daynight').classList.add('active');
 
 document.getElementById('btn-daynight').addEventListener('click', () => {
   sunEnabled = !sunEnabled;
