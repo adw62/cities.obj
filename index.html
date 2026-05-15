@@ -1171,15 +1171,17 @@ let windowColor  = new THREE.Color(0x2f6aaa);
 let wallColor    = new THREE.Color(0x4488cc);
 let _windowMat   = null;
 let _beaconMat   = null;
+let _wallGlowMat = null;
 const _roomTex   = new THREE.TextureLoader().load('mega_texture.png');
 
 function colorKey(name) {
   if (name === 'base_plate') return 'base';
   if (name && (name.startsWith('boulevard') || name.startsWith('highway'))) return 'road';
-  if (name && name.startsWith('beacon'))   return 'beacon';
-  if (name && name.startsWith('roof_'))    return 'roof';
-  if (name && name.startsWith('window_'))  return 'window';
-  if (name && name.startsWith('wall_'))    return 'wall';
+  if (name && name.startsWith('beacon'))    return 'beacon';
+  if (name && name.startsWith('roof_'))     return 'roof';
+  if (name && name.startsWith('window_'))   return 'window';
+  if (name && name.startsWith('smallwall_')) return 'smallwall';
+  if (name && name.startsWith('wall_'))     return 'wall';
   return 'building';
 }
 function colorFor(key) {
@@ -1187,7 +1189,7 @@ function colorFor(key) {
   if (key === 'road')    return roadColor;
   if (key === 'roof')    return roofColor;
   if (key === 'window')  return windowColor;
-  if (key === 'wall')    return wallColor;
+  if (key === 'wall' || key === 'smallwall') return wallColor;
   return modelColor;
 }
 let autoScale = 1;
@@ -2604,7 +2606,7 @@ function mergeMeshes(meshes, key) {
   return mesh;
 }
 
-const COLOR_KEYS = ['base', 'road', 'building', 'wall', 'window', 'roof', 'beacon'];
+const COLOR_KEYS = ['base', 'road', 'building', 'wall', 'smallwall', 'window', 'roof', 'beacon'];
 
 
 function updateColors() {
@@ -2705,6 +2707,12 @@ renderer.setAnimationLoop(() => {
         : 0;
     }
     if (_beaconMat) _beaconMat.uniforms.uTime.value += dt;
+    if (_wallGlowMat) {
+      _wallGlowMat.uniforms.uTime.value  += dt;
+      _wallGlowMat.uniforms.uNight.value  = sunEnabled
+        ? Math.max(0, Math.min(1, (0.12 - sunY) / 0.35))
+        : 0;
+    }
     sun.position.set(Math.cos(flyT) * 400, sunY * 400, 0);
     window._starMat.opacity = sunEnabled ? Math.max(0, Math.min(1, (-sunY - 0.2) / 0.4)) : 0;
     {
@@ -3214,6 +3222,10 @@ document.getElementById('btn-generate').addEventListener('click', () => {
         _beaconMat = beaconMat;
         group.add(new THREE.Mesh(geo, beaconMat));
         continue;
+      } else if (key === 'wall') {
+        mat = new THREE.MeshLambertMaterial({ color: colorFor(key), side: THREE.DoubleSide });
+      } else if (key === 'smallwall') {
+        mat = new THREE.MeshLambertMaterial({ color: colorFor('wall'), side: THREE.DoubleSide });
       } else {
         mat = new THREE.MeshLambertMaterial({ color: colorFor(key), side: THREE.DoubleSide });
       }
@@ -3227,6 +3239,7 @@ document.getElementById('btn-generate').addEventListener('click', () => {
     const size3 = box3.getSize(new THREE.Vector3());
     const center3 = box3.getCenter(new THREE.Vector3());
     autoScale = 80 / Math.max(size3.x, size3.y, size3.z);
+    if (_wallGlowMat) _wallGlowMat.uniforms.uScale.value = autoScale;
     modelCenter.copy(center3);
     group.scale.setScalar(autoScale);
     group.position.copy(center3).multiplyScalar(-autoScale);
