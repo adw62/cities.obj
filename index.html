@@ -230,7 +230,7 @@
     <input type="range" id="gen-hw" min="0" max="4" step="1" value="1">
   </div>
 
-  <div class="panel-section" id="gen-vsites-row" style="display:none;">
+  <div class="panel-section" id="gen-vsites-row" style="display:block;">
     <label>Voronoi Sites <span id="gen-vsites-val">8</span></label>
     <input type="range" id="gen-vsites" min="3" max="24" step="1" value="8">
   </div>
@@ -259,7 +259,7 @@
 
   <div style="display:flex;flex-direction:column;gap:5px;margin-top:2px;">
     <label style="display:flex;gap:8px;align-items:center;text-transform:none;color:#aaa;font-size:11px;">
-      <input type="checkbox" id="gen-voronoi"> Voronoi boulevards</label>
+      <input type="checkbox" id="gen-voronoi" checked> Voronoi boulevards</label>
     <label style="display:flex;gap:8px;align-items:center;text-transform:none;color:#aaa;font-size:11px;">
       <input type="checkbox" id="gen-diagonal"> Diagonal road</label>
     <label style="display:flex;gap:8px;align-items:center;text-transform:none;color:#aaa;font-size:11px;">
@@ -332,7 +332,15 @@
     </div>
     <div class="panel-section">
       <label>Building Color</label>
-      <input type="color" id="color-pick" value="#4488cc">
+      <input type="color" id="color-wall" value="#4488cc">
+    </div>
+    <div class="panel-section">
+      <label>Window Color</label>
+      <input type="color" id="color-window" value="#2f6aaa">
+    </div>
+    <div class="panel-section">
+      <label>Roof Color</label>
+      <input type="color" id="color-roof" value="#66aaee">
     </div>
     <div class="panel-section">
       <label>Road Color</label>
@@ -400,7 +408,6 @@
 
 <script type="module">
 import * as THREE from 'three';
-import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
@@ -1159,13 +1166,25 @@ let rotSpeed = 0;
 
 controls.autoRotateSpeed = 0;
 
+let roofColor    = new THREE.Color(0x66aaee);
+let windowColor  = new THREE.Color(0x2f6aaa);
+let wallColor    = new THREE.Color(0x4488cc);
+
 function colorKey(name) {
   if (name === 'base_plate') return 'base';
   if (name && (name.startsWith('boulevard') || name.startsWith('highway'))) return 'road';
+  if (name && name.startsWith('roof_'))   return 'roof';
+  if (name && name.startsWith('window_')) return 'window';
+  if (name && name.startsWith('wall_'))   return 'wall';
   return 'building';
 }
 function colorFor(key) {
-  return key === 'base' ? baseColor : key === 'road' ? roadColor : modelColor;
+  if (key === 'base')    return baseColor;
+  if (key === 'road')    return roadColor;
+  if (key === 'roof')    return roofColor;
+  if (key === 'window')  return windowColor;
+  if (key === 'wall')    return wallColor;
+  return modelColor;
 }
 let autoScale = 1;
 let modelCenter = new THREE.Vector3();
@@ -1195,20 +1214,6 @@ function ptKey(x, y, z, tol) {
   return `${Math.round(x/tol)},${Math.round(y/tol)},${Math.round(z/tol)}`;
 }
 
-function loadTrafficJSON(modelPath) {
-  removeCars();
-  trafficData = null;
-  adjacency = {};
-  const jsonPath = modelPath.replace('.obj', '_traffic.json');
-  fetch(jsonPath)
-    .then(r => { if (!r.ok) throw new Error('no traffic json'); return r.json(); })
-    .then(data => {
-      trafficData = data;
-      buildAdjacency(data);
-      if (carsEnabled && currentObj) spawnCars();
-    })
-    .catch(() => {});
-}
 
 function splitTrafficSegments(segs) {
   function xsect(ax, az, bx, bz, cx, cz, dx, dz) {
@@ -1562,7 +1567,7 @@ function _spawnFireEvent() {
   currentObj.localToWorld(testPt);
   const rc = new THREE.Raycaster(new THREE.Vector3(testPt.x, 9999, testPt.z), new THREE.Vector3(0,-1,0));
   const buildMeshes = [];
-  currentObj.traverse(c => { if(c.isMesh && c.userData.colorKey==='building') buildMeshes.push(c); });
+  currentObj.traverse(c => { if(c.isMesh && ['building','wall','window','roof'].includes(c.userData.colorKey)) buildMeshes.push(c); });
   const hits = rc.intersectObjects(buildMeshes, false);
   if (hits.length) {
     const localHit = currentObj.worldToLocal(hits[0].point.clone());
@@ -2576,47 +2581,6 @@ function _tickUfo(dt) {
   }
 }
 
-// ── OBJ Loader ────────────────────────────────────────────
-const loader = new OBJLoader();
-
-function loadModel(path) {
-  status.textContent = `Loading ${path.split('/').pop()}…`;
-
-  if (currentObj) {
-    scene.remove(currentObj);
-    currentObj.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
-    currentObj = null;
-  }
-  removeRain();
-  _removeFire();
-  _removeUfo();
-  _removeTornado();
-
-  loader.load(path, (obj) => {
-    const box = new THREE.Box3().setFromObject(obj);
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
-    autoScale = 80 / Math.max(size.x, size.y, size.z);
-    modelCenter.copy(center);
-
-    const merged = buildMergedFromObj(obj);
-    obj.traverse(c => { if (c.isMesh) { c.geometry.dispose(); c.material.dispose(); } });
-    merged.scale.setScalar(autoScale);
-    merged.position.copy(modelCenter).multiplyScalar(-autoScale);
-
-    scene.add(merged);
-    currentObj = merged;
-    applyWireframe();
-
-    _spawnPlanets();
-    loadTrafficJSON(path);
-
-    status.textContent = `${path.split('/').pop()} — ${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} units`;
-  }, undefined, (err) => {
-    status.textContent = `Error loading: ${path}`;
-    console.error(err);
-  });
-}
 
 function mergeMeshes(meshes, key) {
   if (!meshes.length) return null;
@@ -2636,16 +2600,8 @@ function mergeMeshes(meshes, key) {
   return mesh;
 }
 
-function buildMergedFromObj(obj) {
-  const groups = { base: [], road: [], building: [] };
-  obj.traverse(c => { if (c.isMesh && !c.userData.isCar) groups[colorKey(c.name)].push(c); });
-  const out = new THREE.Group();
-  for (const key of ['base', 'road', 'building']) {
-    const mesh = mergeMeshes(groups[key], key);
-    if (mesh) out.add(mesh);
-  }
-  return out;
-}
+const COLOR_KEYS = ['base', 'road', 'building', 'wall', 'window', 'roof'];
+
 
 function updateColors() {
   if (!currentObj) return;
@@ -2797,13 +2753,24 @@ document.getElementById('color-base').addEventListener('input', e => {
   updateColors();
 });
 
-document.getElementById('color-pick').addEventListener('input', e => {
-  modelColor.set(e.target.value);
-  updateColors();
-});
 
 document.getElementById('color-road').addEventListener('input', e => {
   roadColor.set(e.target.value);
+  updateColors();
+});
+
+document.getElementById('color-wall').addEventListener('input', e => {
+  wallColor.set(e.target.value);
+  updateColors();
+});
+
+document.getElementById('color-window').addEventListener('input', e => {
+  windowColor.set(e.target.value);
+  updateColors();
+});
+
+document.getElementById('color-roof').addEventListener('input', e => {
+  roofColor.set(e.target.value);
   updateColors();
 });
 
@@ -2929,13 +2896,6 @@ window.addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-// ── Initial load ──────────────────────────────────────────
-fetch('output/manifest.json')
-  .then(r => r.json())
-  .then(files => {
-    if (files.length) loadModel(`output/${files[0]}`);
-  })
-  .catch(() => { status.textContent = 'Error: could not load output/manifest.json'; });
 
 // ── Music ─────────────────────────────────────────────────
 const audio = new Audio();
@@ -3097,16 +3057,15 @@ document.getElementById('btn-generate').addEventListener('click', () => {
       currentObj.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
     }
 
-    // Group raw geometry by color category — collapses hundreds of meshes to 3 draw calls
-    const groupBuf = { base: { totalIdx: 0, parts: [] }, road: { totalIdx: 0, parts: [] }, building: { totalIdx: 0, parts: [] } };
+    // Group raw geometry by color category — one draw call per element type
+    const groupBuf = Object.fromEntries(COLOR_KEYS.map(k => [k, { totalIdx: 0, parts: [] }]));
     for (const { name, verts, faces } of objects) {
       const k = colorKey(name);
-      groupBuf[k].parts.push({ verts, faces });
-      groupBuf[k].totalIdx += faces.length;
+      if (groupBuf[k]) { groupBuf[k].parts.push({ verts, faces }); groupBuf[k].totalIdx += faces.length; }
     }
 
     const group = new THREE.Group();
-    for (const key of ['base', 'road', 'building']) {
+    for (const key of COLOR_KEYS) {
       const g = groupBuf[key];
       if (!g.totalIdx) continue;
       const positions = new Float32Array(g.totalIdx * 3);
@@ -3151,6 +3110,9 @@ document.getElementById('btn-generate').addEventListener('click', () => {
 
   genWorker.postMessage(config);
 });
+
+// ── Initial generate ──────────────────────────────────────
+document.getElementById('btn-generate').click();
 
 document.getElementById('btn-download').addEventListener('click', () => {
   if (!lastObjText) return;

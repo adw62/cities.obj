@@ -135,7 +135,8 @@ function windowedBox(w, h, d, nFloors, winDepth=0.5) {
     [d, (u,v)=>[ hw,   v,  u-hd],  (u,v)=>[ hw-wd,v,  u-hd ]],
     [d, (u,v)=>[-hw,   v,  hd-u],  (u,v)=>[-hw+wd,v,  hd-u ]],
   ];
-  const allVerts=[], allFaces=[];
+  const wVerts=[], wFaces=[];   // wall (frame + surround)
+  const gVerts=[], gFaces=[];   // glass panes
   for (const [panelW, ofn, ifn] of panels) {
     const nBays = Math.max(1, Math.round(panelW/4));
     const bayW  = panelW/nBays, floorH=h/nFloors;
@@ -143,33 +144,40 @@ function windowedBox(w, h, d, nFloors, winDepth=0.5) {
     const uGrid=[], vGrid=[];
     for (let b=0;b<nBays;b++) { const o=b*bayW; uGrid.push(o,o+mu,o+mu+wu); } uGrid.push(panelW);
     for (let f=0;f<nFloors;f++) { const o=f*floorH; vGrid.push(o,o+mvB,o+mvB+wv); } vGrid.push(h);
-    const nu=uGrid.length, nv=vGrid.length, base=allVerts.length;
-    for (let iv=0;iv<nv;iv++) for (let iu=0;iu<nu;iu++) allVerts.push(ofn(uGrid[iu],vGrid[iv]));
-    const oi=(iu,iv)=>base+iv*nu+iu;
+    const nu=uGrid.length, nv=vGrid.length, wbase=wVerts.length;
+    for (let iv=0;iv<nv;iv++) for (let iu=0;iu<nu;iu++) wVerts.push(ofn(uGrid[iu],vGrid[iv]));
+    const oi=(iu,iv)=>wbase+iv*nu+iu;
     const innerMap=new Map();
     for (let iu=0;iu<nu-1;iu++) for (let iv=0;iv<nv-1;iv++) {
       if (iu%3===1 && iv%3===1) {
         for (const [du,dv] of [[0,0],[1,0],[0,1],[1,1]]) {
           const key=`${iu+du},${iv+dv}`;
-          if (!innerMap.has(key)) { innerMap.set(key,allVerts.length); allVerts.push(ifn(uGrid[iu+du],vGrid[iv+dv])); }
+          if (!innerMap.has(key)) {
+            const v=ifn(uGrid[iu+du],vGrid[iv+dv]);
+            innerMap.set(key,{wi:wVerts.length,gi:gVerts.length});
+            wVerts.push(v); gVerts.push(v);
+          }
         }
       }
     }
     for (let iu=0;iu<nu-1;iu++) for (let iv=0;iv<nv-1;iv++) {
       const a=oi(iu,iv),b=oi(iu+1,iv),c=oi(iu,iv+1),dd=oi(iu+1,iv+1);
       if (iu%3===1 && iv%3===1) {
-        const ai=innerMap.get(`${iu},${iv}`), bi=innerMap.get(`${iu+1},${iv}`);
-        const ci=innerMap.get(`${iu},${iv+1}`), di=innerMap.get(`${iu+1},${iv+1}`);
-        allFaces.push([a,b,bi],[a,bi,ai],[c,ci,di],[c,di,dd],[a,ci,c],[a,ai,ci],[b,dd,di],[b,di,bi],[ai,bi,di],[ai,di,ci]);
+        const {wi:ai,gi:gai}=innerMap.get(`${iu},${iv}`);
+        const {wi:bi,gi:gbi}=innerMap.get(`${iu+1},${iv}`);
+        const {wi:ci,gi:gci}=innerMap.get(`${iu},${iv+1}`);
+        const {wi:di,gi:gdi}=innerMap.get(`${iu+1},${iv+1}`);
+        wFaces.push([a,b,bi],[a,bi,ai],[c,ci,di],[c,di,dd],[a,ci,c],[a,ai,ci],[b,dd,di],[b,di,bi]);
+        gFaces.push([gai,gbi,gdi],[gai,gdi,gci]);
       } else {
-        allFaces.push([a,b,dd],[a,dd,c]);
+        wFaces.push([a,b,dd],[a,dd,c]);
       }
     }
   }
-  const bv=allVerts.length;
-  allVerts.push([-hw,0,-hd],[hw,0,-hd],[hw,0,hd],[-hw,0,hd],[-hw,h,-hd],[hw,h,-hd],[hw,h,hd],[-hw,h,hd]);
-  allFaces.push([bv,bv+2,bv+1],[bv,bv+3,bv+2],[bv+4,bv+5,bv+6],[bv+4,bv+6,bv+7]);
-  return { verts:allVerts, faces:allFaces };
+  const bv=wVerts.length;
+  wVerts.push([-hw,0,-hd],[hw,0,-hd],[hw,0,hd],[-hw,0,hd],[-hw,h,-hd],[hw,h,-hd],[hw,h,hd],[-hw,h,hd]);
+  wFaces.push([bv,bv+2,bv+1],[bv,bv+3,bv+2],[bv+4,bv+5,bv+6],[bv+4,bv+6,bv+7]);
+  return { wall:{verts:wVerts,faces:wFaces}, window:{verts:gVerts,faces:gFaces} };
 }
 
 function roadStrip(x1,z1,x2,z2,width,height=0.5) {
@@ -344,9 +352,9 @@ function numFloors(lot,cfg,smp) {
 
 function bodyMesh(w,h,d,floors,cfg,smp) {
   const aspect=Math.max(w,d)/Math.max(Math.min(w,d),0.1);
-  if (aspect<1.4&&floors>=5&&smp.random()<0.20) return [prism(smp.choice([6,8]),Math.min(w,d)/2,h),true];
-  if (floors>=cfg.window_min_floors) return [windowedBox(w,h,d,floors,cfg.window_depth),false];
-  return [box(w,h,d),false];
+  if (aspect<1.4&&floors>=5&&smp.random()<0.20) return {wall:prism(smp.choice([6,8]),Math.min(w,d)/2,h),window:emptyMesh(),isprism:true};
+  if (floors>=cfg.window_min_floors) { const {wall,window}=windowedBox(w,h,d,floors,cfg.window_depth); return {wall,window,isprism:false}; }
+  return {wall:box(w,h,d),window:emptyMesh(),isprism:false};
 }
 
 function rooftopClutter(w,d,cx,y,cz,smp) {
@@ -392,25 +400,25 @@ function styleSimple(lot,cfg,smp) {
     const lf=Math.floor(floors*smp.uniform(0.55,0.72)),hf=Math.max(1,floors-lf);
     const lh=lf*cfg.floor_height,hh=hf*cfg.floor_height,sb=smp.uniform(2,4.5);
     const w2=Math.max(3,w-2*sb),d2=Math.max(3,d-2*sb);
-    const [lm]=bodyMesh(w,lh,d,lf,cfg,smp),[hm,hp]=bodyMesh(w2,hh,d2,hf,cfg,smp);
-    return stacked([place(lm,lot.cx,0,lot.cz),place(hm,lot.cx,lh,lot.cz),roofMesh(w2,d2,lot.cx,lh+hh,lot.cz,cfg,smp,!hp)]);
+    const {wall:lw,window:lwn}=bodyMesh(w,lh,d,lf,cfg,smp);
+    const {wall:hw,window:hwn,isprism:hp}=bodyMesh(w2,hh,d2,hf,cfg,smp);
+    return {wall:mergeMeshes([place(lw,lot.cx,0,lot.cz),place(hw,lot.cx,lh,lot.cz)]),window:mergeMeshes([place(lwn,lot.cx,0,lot.cz),place(hwn,lot.cx,lh,lot.cz)]),roof:roofMesh(w2,d2,lot.cx,lh+hh,lot.cz,cfg,smp,!hp)};
   }
-  const [body,isp]=bodyMesh(w,h,d,floors,cfg,smp);
-  return stacked([place(body,lot.cx,0,lot.cz),roofMesh(w,d,lot.cx,h,lot.cz,cfg,smp,!isp)]);
+  const {wall,window,isprism}=bodyMesh(w,h,d,floors,cfg,smp);
+  return {wall:place(wall,lot.cx,0,lot.cz),window:place(window,lot.cx,0,lot.cz),roof:roofMesh(w,d,lot.cx,h,lot.cz,cfg,smp,!isprism)};
 }
 
 function styleStepped(lot,cfg,smp) {
   const [w0,d0]=lotDims(lot,cfg), tf=numFloors(lot,cfg,smp);
   const ns=smp.randint(2,Math.min(4,Math.max(2,Math.floor(tf/3))));
-  const parts=[]; let y=0,w=w0,d=d0,isp=false;
+  const walls=[],windows=[]; let y=0,w=w0,d=d0,isp=false;
   for (let i=0;i<ns;i++) {
     const fh=Math.max(1,Math.floor(tf/ns)+(i===0?1:0)),h=fh*cfg.floor_height;
-    const [bm,ip]=bodyMesh(w,h,d,fh,cfg,smp); isp=ip;
-    parts.push(place(bm,lot.cx,y,lot.cz)); y+=h;
+    const {wall,window,isprism}=bodyMesh(w,h,d,fh,cfg,smp); isp=isprism;
+    walls.push(place(wall,lot.cx,y,lot.cz)); windows.push(place(window,lot.cx,y,lot.cz)); y+=h;
     const sh=smp.uniform(1.5,3.5); w=Math.max(2,w-2*sh); d=Math.max(2,d-2*sh);
   }
-  parts.push(roofMesh(w,d,lot.cx,y,lot.cz,cfg,smp,!isp));
-  return stacked(parts);
+  return {wall:mergeMeshes(walls),window:mergeMeshes(windows),roof:roofMesh(w,d,lot.cx,y,lot.cz,cfg,smp,!isp)};
 }
 
 function styleTowerPodium(lot,cfg,smp) {
@@ -419,8 +427,9 @@ function styleTowerPodium(lot,cfg,smp) {
   const ph=pf*cfg.floor_height, th=twf*cfg.floor_height;
   const tw=Math.max(2,w0*smp.uniform(0.3,0.6)), td=Math.max(2,d0*smp.uniform(0.3,0.6));
   const dx=smp.uniform(-(w0-tw)/2*0.6,(w0-tw)/2*0.6), dz=smp.uniform(-(d0-td)/2*0.6,(d0-td)/2*0.6);
-  const [pm]=bodyMesh(w0,ph,d0,pf,cfg,smp),[tm,tp]=bodyMesh(tw,th,td,twf,cfg,smp);
-  return stacked([place(pm,lot.cx,0,lot.cz),place(tm,lot.cx+dx,ph,lot.cz+dz),roofMesh(tw,td,lot.cx+dx,ph+th,lot.cz+dz,cfg,smp,!tp)]);
+  const {wall:pw,window:pwn}=bodyMesh(w0,ph,d0,pf,cfg,smp);
+  const {wall:tw2,window:twn,isprism:tp}=bodyMesh(tw,th,td,twf,cfg,smp);
+  return {wall:mergeMeshes([place(pw,lot.cx,0,lot.cz),place(tw2,lot.cx+dx,ph,lot.cz+dz)]),window:mergeMeshes([place(pwn,lot.cx,0,lot.cz),place(twn,lot.cx+dx,ph,lot.cz+dz)]),roof:roofMesh(tw,td,lot.cx+dx,ph+th,lot.cz+dz,cfg,smp,!tp)};
 }
 
 function styleLShaped(lot,cfg,smp) {
@@ -429,7 +438,7 @@ function styleLShaped(lot,cfg,smp) {
   const floors=numFloors(lot,cfg,smp),h=floors*cfg.floor_height;
   const sx=smp.uniform(0.45,0.65),sz=smp.uniform(0.45,0.65);
   const z0=lot.cz-d/2,a1d=d*sz,a2w=w*sx,a2d=d*(1-sz);
-  return stacked([place(box(w,h,a1d),lot.cx,0,z0+a1d/2),place(box(a2w,h*smp.uniform(0.65,1),a2d),lot.cx-w/2+a2w/2,0,z0+a1d+a2d/2),roofMesh(w,a1d,lot.cx,h,z0+a1d/2,cfg,smp,false)]);
+  return {wall:mergeMeshes([place(box(w,h,a1d),lot.cx,0,z0+a1d/2),place(box(a2w,h*smp.uniform(0.65,1),a2d),lot.cx-w/2+a2w/2,0,z0+a1d+a2d/2)]),window:emptyMesh(),roof:roofMesh(w,a1d,lot.cx,h,z0+a1d/2,cfg,smp,false)};
 }
 
 function styleCourtyard(lot,cfg,smp) {
@@ -437,23 +446,23 @@ function styleCourtyard(lot,cfg,smp) {
   if (Math.min(w,d)<12) return styleLShaped(lot,cfg,smp);
   const floors=numFloors(lot,cfg,smp),h=floors*cfg.floor_height;
   const ww=w*smp.uniform(0.18,0.30),bd=d*smp.uniform(0.22,0.38);
-  return stacked([place(box(ww,h,d),lot.cx-w/2+ww/2,0,lot.cz),place(box(ww,h,d),lot.cx+w/2-ww/2,0,lot.cz),place(box(w-2*ww,h*smp.uniform(0.65,1),bd),lot.cx,0,lot.cz+d/2-bd/2)]);
+  return {wall:mergeMeshes([place(box(ww,h,d),lot.cx-w/2+ww/2,0,lot.cz),place(box(ww,h,d),lot.cx+w/2-ww/2,0,lot.cz),place(box(w-2*ww,h*smp.uniform(0.65,1),bd),lot.cx,0,lot.cz+d/2-bd/2)]),window:emptyMesh(),roof:emptyMesh()};
 }
 
 function styleChamfered(lot,cfg,smp) {
   const [w,d]=lotDims(lot,cfg),floors=numFloors(lot,cfg,smp);
   if (floors<5) return styleSimple(lot,cfg,smp);
   const h=floors*cfg.floor_height,sides=smp.choice([6,8,12]),r=Math.min(w,d)/2;
-  const parts=[place(prism(sides,r,h),lot.cx,0,lot.cz)];
-  if (h>12&&smp.random()<0.55) parts.push(place(prism(sides,r*smp.uniform(0.35,0.65),h*smp.uniform(0.18,0.35)),lot.cx,h,lot.cz));
-  return stacked(parts);
+  const wallParts=[place(prism(sides,r,h),lot.cx,0,lot.cz)];
+  if (h>12&&smp.random()<0.55) wallParts.push(place(prism(sides,r*smp.uniform(0.35,0.65),h*smp.uniform(0.18,0.35)),lot.cx,h,lot.cz));
+  return {wall:mergeMeshes(wallParts),window:emptyMesh(),roof:emptyMesh()};
 }
 
 const STYLES=[styleSimple,styleStepped,styleTowerPodium,styleLShaped,styleCourtyard,styleChamfered];
 const BASE_W=[0.20,0.18,0.14,0.24,0.12,0.12];
 
 function generateBuilding(lot,cfg,smp) {
-  if (lot.width<cfg.min_lot_size*0.4||lot.depth<cfg.min_lot_size*0.4) return emptyMesh();
+  if (lot.width<cfg.min_lot_size*0.4||lot.depth<cfg.min_lot_size*0.4) return {wall:emptyMesh(),window:emptyMesh(),roof:emptyMesh()};
   const w=[...BASE_W];
   if (lot.centrality>0.6)      { w[2]+=0.10;w[5]+=0.10;w[1]+=0.05;w[3]-=0.15;w[4]-=0.10; }
   else if (lot.centrality<0.3) { w[3]+=0.10;w[4]+=0.08;w[0]+=0.07;w[2]-=0.15;w[5]-=0.10; }
@@ -643,22 +652,24 @@ function generateCity(config) {
     return [bd,ba];
   };
 
+  const rotateAround=(m,cx,cz,a)=>transformMesh(transformMesh(m,[-cx,0,-cz]),[cx,0,cz],a);
   const objects=[];
   for (let i=0;i<lots.length;i++) {
-    const lot=lots[i]; let mesh=generateBuilding(lot,cfg,smp);
-    if (!mesh.verts.length) continue;
+    const lot=lots[i]; let parts=generateBuilding(lot,cfg,smp);
+    if (!parts.wall.verts.length&&!parts.window.verts.length&&!parts.roof.verts.length) continue;
     let rotAngle=null;
     if (boulevards.length) {
       const [dist,angle]=nearBlvd(lot);
       if (dist<cfg.block_width&&rng()<0.70) {
-        const mv=transformMesh(mesh,[-lot.cx,0,-lot.cz]);
-        const rot=transformMesh(mv,[0,0,0],angle);
-        mesh=transformMesh(rot,[lot.cx,0,lot.cz]);
+        parts={wall:rotateAround(parts.wall,lot.cx,lot.cz,angle),window:rotateAround(parts.window,lot.cx,lot.cz,angle),roof:rotateAround(parts.roof,lot.cx,lot.cz,angle)};
         rotAngle=angle;
       }
     }
     if (boulevards.length&&boulevards.some(([,,,, poly])=>lotBlvdOverlap(lot,cfg,poly,rotAngle||0)>0.01)) continue;
-    objects.push([`building_${String(i).padStart(4,'0')}`,mesh]);
+    const idx=String(i).padStart(4,'0');
+    if (parts.wall.verts.length)   objects.push([`wall_${idx}`,parts.wall]);
+    if (parts.window.verts.length) objects.push([`window_${idx}`,parts.window]);
+    if (parts.roof.verts.length)   objects.push([`roof_${idx}`,parts.roof]);
   }
 
   for (let i=0;i<nSB;i++) { const [x1,z1,x2,z2]=boulevards[i]; objects.push([`boulevard_${String(i).padStart(3,'0')}`,roadStrip(x1,z1,x2,z2,cfg.street_width,cfg.road_height)]); }
