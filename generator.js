@@ -397,7 +397,11 @@ function roofMesh(w,d,cx,y,cz,cfg,smp,allowPyramid=true) {
                place(box(br,t,d-2*br),cx-w/2+br/2,y,cz),place(box(br,t,d-2*br),cx+w/2-br/2,y,cz));
   }
   if (flat&&w>5&&d>5&&smp.random()<0.72) parts.push(rooftopClutter(w,d,cx,y,cz,smp));
-  if (y>30&&smp.random()<0.15) parts.push(place(prism(4,smp.uniform(0.25,0.55),y*smp.uniform(0.10,0.20)),cx,y,cz));
+  if (y>30&&smp.random()<0.15) {
+    const sr=smp.uniform(0.25,0.55), sh=y*smp.uniform(0.10,0.20);
+    parts.push(place(prism(4,sr,sh),cx,y,cz));
+    if (y>45&&smp.random()<0.20) _beacons.push(place(box(1.5,1.5,1.5),cx,y+sh-0.75,cz));
+  }
   return stacked(parts);
 }
 
@@ -617,7 +621,9 @@ function splitAtIntersections(segs) {
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
+let _beacons = [];
 function generateCity(config) {
+  _beacons = [];
   const cfg={
     seed:42,city_width:400,city_depth:400,scale:0.001,dist:'uniform',
     block_width:40,block_depth:40,street_width:8,min_lot_size:8,max_lot_size:20,lot_setback:0.5,
@@ -686,6 +692,8 @@ function generateCity(config) {
     if (parts.window.verts.length) objects.push([`window_${idx}`,parts.window]);
     if (parts.roof.verts.length)   objects.push([`roof_${idx}`,parts.roof]);
   }
+
+  if (_beacons.length) objects.push(['beacon_all', mergeMeshes(_beacons)]);
 
   for (let i=0;i<nSB;i++) { const [x1,z1,x2,z2]=boulevards[i]; objects.push([`boulevard_${String(i).padStart(3,'0')}`,roadStrip(x1,z1,x2,z2,cfg.street_width,cfg.road_height)]); }
   objects.push(...hwObjects);

@@ -1170,14 +1170,16 @@ let roofColor    = new THREE.Color(0x66aaee);
 let windowColor  = new THREE.Color(0x2f6aaa);
 let wallColor    = new THREE.Color(0x4488cc);
 let _windowMat   = null;
+let _beaconMat   = null;
 const _roomTex   = new THREE.TextureLoader().load('mega_texture.png');
 
 function colorKey(name) {
   if (name === 'base_plate') return 'base';
   if (name && (name.startsWith('boulevard') || name.startsWith('highway'))) return 'road';
-  if (name && name.startsWith('roof_'))   return 'roof';
-  if (name && name.startsWith('window_')) return 'window';
-  if (name && name.startsWith('wall_'))   return 'wall';
+  if (name && name.startsWith('beacon'))   return 'beacon';
+  if (name && name.startsWith('roof_'))    return 'roof';
+  if (name && name.startsWith('window_'))  return 'window';
+  if (name && name.startsWith('wall_'))    return 'wall';
   return 'building';
 }
 function colorFor(key) {
@@ -2602,7 +2604,7 @@ function mergeMeshes(meshes, key) {
   return mesh;
 }
 
-const COLOR_KEYS = ['base', 'road', 'building', 'wall', 'window', 'roof'];
+const COLOR_KEYS = ['base', 'road', 'building', 'wall', 'window', 'roof', 'beacon'];
 
 
 function updateColors() {
@@ -2702,6 +2704,7 @@ renderer.setAnimationLoop(() => {
         ? Math.max(0, Math.min(1, (0.12 - sunY) / 0.35))
         : 0;
     }
+    if (_beaconMat) _beaconMat.uniforms.uTime.value += dt;
     sun.position.set(Math.cos(flyT) * 400, sunY * 400, 0);
     window._starMat.opacity = sunEnabled ? Math.max(0, Math.min(1, (-sunY - 0.2) / 0.4)) : 0;
     {
@@ -3133,12 +3136,12 @@ document.getElementById('btn-generate').addEventListener('click', () => {
               float wh = fract(sin(dot(pid, vec2(127.1, 311.7))) * 43758.5453);
               vec2 blockID = floor(vPaneID / vec2(3.0, 2.0)) + vec2(0.37, 0.71);
               float bh = fract(sin(dot(blockID, vec2(127.1, 311.7))) * 43758.5453);
-              float bPeriod = 200.0 + bh * 400.0;
+              float bPeriod = 600.0 + bh * 1200.0;
               float bSlot = floor(uTime / bPeriod);
               float bSlotHash = fract(sin(dot(vec2(bh * 131.7, bSlot), vec2(127.1, 311.7))) * 43758.5453);
               float blockLit = step(0.78, bSlotHash);
               float fineH = fract(sin(dot(pid, vec2(211.3, 97.7))) * 43758.5453);
-              float fPeriod = 250.0 + fineH * 450.0;
+              float fPeriod = 750.0 + fineH * 1350.0;
               float fSlot = floor(uTime / fPeriod);
               float fSlotHash = fract(sin(dot(vec2(fineH * 173.1, fSlot), vec2(311.7, 127.1))) * 43758.5453);
               float loneLit = step(0.80, fSlotHash);
@@ -3147,8 +3150,9 @@ document.getElementById('btn-generate').addEventListener('click', () => {
               float buildingH = fract(sin(dot(bq, vec3(191.3, 463.7, 217.1))) * 43758.5453);
               float buildingBright = mix(0.65, 0.8, buildingH);
               float windowBright = mix(0.9, 1.0, wh);
-              float onThresh = mix(0.08, 0.92, wh);
-              float nightFactor = smoothstep(onThresh - 0.06, onThresh + 0.06, uNight);
+              float ah = fract(sin(dot(pid + vec2(13.7, 91.3), vec2(431.1, 271.9))) * 93751.2453);
+              float onThresh = mix(0.05, 0.95, ah);
+              float nightFactor = smoothstep(onThresh - 0.12, onThresh + 0.12, uNight);
               // sample room interior atlas — 64x64 grid of 32x32 cells
               float cellIdx = floor(wh * 4096.0);
               float cellCol = mod(cellIdx, 64.0);
@@ -3178,6 +3182,38 @@ document.getElementById('btn-generate').addEventListener('click', () => {
         const emissiveMesh = new THREE.Mesh(geo, emissiveMat);
         emissiveMesh.userData.isEmissiveOverlay = true;
         group.add(emissiveMesh);
+      } else if (key === 'beacon') {
+        const beaconMat = new THREE.ShaderMaterial({
+          uniforms: { uTime: { value: 0 } },
+          vertexShader: `
+            varying vec3 vWorldPos;
+            void main() {
+              vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }`,
+          fragmentShader: `
+            varying vec3 vWorldPos;
+            uniform float uTime;
+            void main() {
+              // unique phase per beacon derived from its world position
+              vec2 bGrid = floor(vWorldPos.xz + 0.5);
+              float phase = fract(sin(dot(bGrid, vec2(127.1, 311.7))) * 43758.5453);
+              float t = mod(uTime + phase * 4.0, 4.0);
+              float white = smoothstep(0.0, 0.10, t) * smoothstep(0.55, 0.38, t);
+              float red   = smoothstep(2.0, 2.10, t) * smoothstep(2.55, 2.38, t);
+              vec3 col = vec3(1.0, 0.95, 0.9) * white * 4.0
+                       + vec3(1.0, 0.05, 0.0) * red   * 2.5;
+              gl_FragColor = vec4(col, 1.0);
+            }`,
+          transparent: true,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          depthTest: true,
+          side: THREE.DoubleSide,
+        });
+        _beaconMat = beaconMat;
+        group.add(new THREE.Mesh(geo, beaconMat));
+        continue;
       } else {
         mat = new THREE.MeshLambertMaterial({ color: colorFor(key), side: THREE.DoubleSide });
       }
