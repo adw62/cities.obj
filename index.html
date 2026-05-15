@@ -1170,6 +1170,7 @@ let roofColor    = new THREE.Color(0x66aaee);
 let windowColor  = new THREE.Color(0x2f6aaa);
 let wallColor    = new THREE.Color(0x4488cc);
 let _windowMat   = null;
+const _roomTex   = new THREE.TextureLoader().load('mega_texture.png');
 
 function colorKey(name) {
   if (name === 'base_plate') return 'base';
@@ -3066,9 +3067,9 @@ document.getElementById('btn-generate').addEventListener('click', () => {
 
     // Group raw geometry by color category — one draw call per element type
     const groupBuf = Object.fromEntries(COLOR_KEYS.map(k => [k, { totalIdx: 0, parts: [] }]));
-    for (const { name, verts, faces } of objects) {
+    for (const { name, verts, faces, uvs, subUVs } of objects) {
       const k = colorKey(name);
-      if (groupBuf[k]) { groupBuf[k].parts.push({ verts, faces }); groupBuf[k].totalIdx += faces.length; }
+      if (groupBuf[k]) { groupBuf[k].parts.push({ verts, faces, uvs, subUVs }); groupBuf[k].totalIdx += faces.length; }
     }
 
     const group = new THREE.Group();
@@ -3087,37 +3088,56 @@ document.getElementById('btn-generate').addEventListener('click', () => {
       }
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      if (key === 'window') {
+        const uvArr    = new Float32Array(g.totalIdx * 2);
+        const subUVArr = new Float32Array(g.totalIdx * 2);
+        let uvOff = 0, sOff = 0;
+        for (const { uvs, subUVs, faces } of g.parts) {
+          for (let i = 0; i < faces.length; i++) {
+            const vi = faces[i];
+            uvArr[uvOff++]    = uvs    ? uvs[vi * 2]        : 0;
+            uvArr[uvOff++]    = uvs    ? uvs[vi * 2 + 1]    : 0;
+            subUVArr[sOff++]  = subUVs ? subUVs[vi * 2]     : 0;
+            subUVArr[sOff++]  = subUVs ? subUVs[vi * 2 + 1] : 0;
+          }
+        }
+        geo.setAttribute('uv',     new THREE.BufferAttribute(uvArr,    2));
+        geo.setAttribute('aSubUV', new THREE.BufferAttribute(subUVArr, 2));
+      }
       geo.computeVertexNormals();
       let mat;
       if (key === 'window') {
         mat = new THREE.MeshPhongMaterial({ color: colorFor('window'), shininess: 80, specular: new THREE.Color(0x4466aa), side: THREE.DoubleSide });
         const emissiveMat = new THREE.ShaderMaterial({
-          uniforms: { uTime: { value: 0 }, uNight: { value: 0 } },
+          uniforms: { uTime: { value: 0 }, uNight: { value: 0 }, uWindowTex: { value: _roomTex } },
           vertexShader: `
+            attribute vec2 aSubUV;
+            varying vec2 vPaneID;
+            varying vec2 vSubUV;
             varying vec3 vWorldPos;
             void main() {
+              vPaneID   = uv;
+              vSubUV    = aSubUV;
               vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
               gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
             }`,
           fragmentShader: `
+            varying vec2 vPaneID;
+            varying vec2 vSubUV;
             varying vec3 vWorldPos;
             uniform float uTime;
             uniform float uNight;
-            float winHash(vec3 p) {
-              vec3 q = floor(p);
-              return fract(sin(dot(q, vec3(127.1, 311.7, 74.7))) * 43758.5453);
-            }
+            uniform sampler2D uWindowTex;
             void main() {
-              float wh = winHash(vWorldPos);
-              // small floor-preference blocks: finer XZ, coarser Y so groups span 1-2 floors
-              vec3 floorCell = floor(vec3(vWorldPos.x * 2.5, vWorldPos.y * 0.6, vWorldPos.z * 2.5));
-              float bh = fract(sin(dot(floorCell, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+              vec2 pid = vPaneID + vec2(0.37, 0.71);
+              float wh = fract(sin(dot(pid, vec2(127.1, 311.7))) * 43758.5453);
+              vec2 blockID = floor(vPaneID / vec2(3.0, 2.0)) + vec2(0.37, 0.71);
+              float bh = fract(sin(dot(blockID, vec2(127.1, 311.7))) * 43758.5453);
               float bPeriod = 200.0 + bh * 400.0;
               float bSlot = floor(uTime / bPeriod);
               float bSlotHash = fract(sin(dot(vec2(bh * 131.7, bSlot), vec2(127.1, 311.7))) * 43758.5453);
               float blockLit = step(0.78, bSlotHash);
-              // lone windows: fine grid, more common
-              float fineH = fract(sin(dot(floor(vWorldPos * 3.0), vec3(211.3, 97.7, 341.1))) * 43758.5453);
+              float fineH = fract(sin(dot(pid, vec2(211.3, 97.7))) * 43758.5453);
               float fPeriod = 250.0 + fineH * 450.0;
               float fSlot = floor(uTime / fPeriod);
               float fSlotHash = fract(sin(dot(vec2(fineH * 173.1, fSlot), vec2(311.7, 127.1))) * 43758.5453);
@@ -3129,7 +3149,17 @@ document.getElementById('btn-generate').addEventListener('click', () => {
               float windowBright = mix(0.9, 1.0, wh);
               float onThresh = mix(0.08, 0.92, wh);
               float nightFactor = smoothstep(onThresh - 0.06, onThresh + 0.06, uNight);
-              float em = lit * nightFactor * pow(uNight, 0.4) * buildingBright * windowBright;
+              // sample room interior atlas — 64x64 grid of 32x32 cells
+              float cellIdx = floor(wh * 4096.0);
+              float cellCol = mod(cellIdx, 64.0);
+              float cellRow = floor(cellIdx / 64.0);
+              vec2 atlasUV = vec2(
+                (cellCol + vSubUV.x) / 64.0,
+                (63.0 - cellRow + vSubUV.y) / 64.0
+              );
+              float roomSilhouette = texture2D(uWindowTex, atlasUV).r;
+              float roomFactor = 1.0 - roomSilhouette * 0.55;
+              float em = lit * nightFactor * pow(uNight, 0.4) * buildingBright * windowBright * roomFactor;
               vec3 warm  = vec3(1.0, 0.65, 0.2);
               vec3 white = vec3(0.95, 0.95, 1.0);
               vec3 col = mix(warm, white, step(0.5, buildingH));

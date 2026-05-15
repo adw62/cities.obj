@@ -67,19 +67,23 @@ function transformMesh(mesh, pos = [0,0,0], rotY = 0) {
     return [x, y, z];
   });
   verts = verts.map(([x, y, z]) => [x + pos[0], y + pos[1], z + pos[2]]);
-  return { verts, faces: mesh.faces.map(f => [f[0], f[1], f[2]]) };
+  return { verts, faces: mesh.faces.map(f => [f[0], f[1], f[2]]), ...(mesh.uvs ? {uvs: mesh.uvs} : {}), ...(mesh.subUVs ? {subUVs: mesh.subUVs} : {}) };
 }
 
 function mergeMeshes(meshes) {
-  const verts = [], faces = [];
-  let off = 0;
+  const verts = [], faces = [], uvs = [], subUVs = [];
+  let off = 0, hasUVs = false, hasSubUVs = false;
   for (const m of meshes) {
     if (!m || !m.verts.length) continue;
     for (const v of m.verts) verts.push(v);
     for (const f of m.faces) faces.push([f[0]+off, f[1]+off, f[2]+off]);
+    if (m.uvs && m.uvs.length) { for (const uv of m.uvs) uvs.push(uv); hasUVs = true; }
+    else if (hasUVs) { for (let i = 0; i < m.verts.length; i++) uvs.push([0, 0]); }
+    if (m.subUVs && m.subUVs.length) { for (const uv of m.subUVs) subUVs.push(uv); hasSubUVs = true; }
+    else if (hasSubUVs) { for (let i = 0; i < m.verts.length; i++) subUVs.push([0, 0]); }
     off += m.verts.length;
   }
-  return { verts, faces };
+  return { verts, faces, ...(hasUVs ? {uvs} : {}), ...(hasSubUVs ? {subUVs} : {}) };
 }
 
 function place(mesh, cx, y, cz) { return transformMesh(mesh, [cx, y, cz]); }
@@ -136,8 +140,9 @@ function windowedBox(w, h, d, nFloors, winDepth=0.5) {
     [d, (u,v)=>[-hw,   v,  hd-u],  (u,v)=>[-hw+wd,v,  hd-u ]],
   ];
   const wVerts=[], wFaces=[];   // wall (frame + surround)
-  const gVerts=[], gFaces=[];   // glass panes
-  for (const [panelW, ofn, ifn] of panels) {
+  const gVerts=[], gFaces=[], gUVs=[], gSubUVs=[];   // glass panes + pane IDs + sub-pane coords
+  for (let pi=0; pi<panels.length; pi++) {
+    const [panelW, ofn, ifn] = panels[pi];
     const nBays = Math.max(1, Math.round(panelW/4));
     const bayW  = panelW/nBays, floorH=h/nFloors;
     const mu=bayW*0.20, mvB=floorH*0.15, wu=bayW-2*mu, wv=floorH*0.70;
@@ -150,12 +155,15 @@ function windowedBox(w, h, d, nFloors, winDepth=0.5) {
     const innerMap=new Map();
     for (let iu=0;iu<nu-1;iu++) for (let iv=0;iv<nv-1;iv++) {
       if (iu%3===1 && iv%3===1) {
+        const b=Math.floor(iu/3), f=Math.floor(iv/3);
         for (const [du,dv] of [[0,0],[1,0],[0,1],[1,1]]) {
           const key=`${iu+du},${iv+dv}`;
           if (!innerMap.has(key)) {
             const v=ifn(uGrid[iu+du],vGrid[iv+dv]);
             innerMap.set(key,{wi:wVerts.length,gi:gVerts.length});
             wVerts.push(v); gVerts.push(v);
+            gUVs.push([b + pi*0.25, f]);
+            gSubUVs.push([du, dv]);
           }
         }
       }
@@ -177,7 +185,7 @@ function windowedBox(w, h, d, nFloors, winDepth=0.5) {
   const bv=wVerts.length;
   wVerts.push([-hw,0,-hd],[hw,0,-hd],[hw,0,hd],[-hw,0,hd],[-hw,h,-hd],[hw,h,-hd],[hw,h,hd],[-hw,h,hd]);
   wFaces.push([bv,bv+2,bv+1],[bv,bv+3,bv+2],[bv+4,bv+5,bv+6],[bv+4,bv+6,bv+7]);
-  return { wall:{verts:wVerts,faces:wFaces}, window:{verts:gVerts,faces:gFaces} };
+  return { wall:{verts:wVerts,faces:wFaces}, window:{verts:gVerts,faces:gFaces,uvs:gUVs,subUVs:gSubUVs} };
 }
 
 function roadStrip(x1,z1,x2,z2,width,height=0.5) {
@@ -438,7 +446,10 @@ function styleLShaped(lot,cfg,smp) {
   const floors=numFloors(lot,cfg,smp),h=floors*cfg.floor_height;
   const sx=smp.uniform(0.45,0.65),sz=smp.uniform(0.45,0.65);
   const z0=lot.cz-d/2,a1d=d*sz,a2w=w*sx,a2d=d*(1-sz);
-  return {wall:mergeMeshes([place(box(w,h,a1d),lot.cx,0,z0+a1d/2),place(box(a2w,h*smp.uniform(0.65,1),a2d),lot.cx-w/2+a2w/2,0,z0+a1d+a2d/2)]),window:emptyMesh(),roof:roofMesh(w,a1d,lot.cx,h,z0+a1d/2,cfg,smp,false)};
+  const h2=h*smp.uniform(0.65,1),f2=Math.max(1,Math.round(h2/cfg.floor_height));
+  const {wall:w1,window:wn1}=bodyMesh(w,h,a1d,floors,cfg,smp);
+  const {wall:w2,window:wn2}=bodyMesh(a2w,h2,a2d,f2,cfg,smp);
+  return {wall:mergeMeshes([place(w1,lot.cx,0,z0+a1d/2),place(w2,lot.cx-w/2+a2w/2,0,z0+a1d+a2d/2)]),window:mergeMeshes([place(wn1,lot.cx,0,z0+a1d/2),place(wn2,lot.cx-w/2+a2w/2,0,z0+a1d+a2d/2)]),roof:roofMesh(w,a1d,lot.cx,h,z0+a1d/2,cfg,smp,false)};
 }
 
 function styleCourtyard(lot,cfg,smp) {
@@ -446,7 +457,11 @@ function styleCourtyard(lot,cfg,smp) {
   if (Math.min(w,d)<12) return styleLShaped(lot,cfg,smp);
   const floors=numFloors(lot,cfg,smp),h=floors*cfg.floor_height;
   const ww=w*smp.uniform(0.18,0.30),bd=d*smp.uniform(0.22,0.38);
-  return {wall:mergeMeshes([place(box(ww,h,d),lot.cx-w/2+ww/2,0,lot.cz),place(box(ww,h,d),lot.cx+w/2-ww/2,0,lot.cz),place(box(w-2*ww,h*smp.uniform(0.65,1),bd),lot.cx,0,lot.cz+d/2-bd/2)]),window:emptyMesh(),roof:emptyMesh()};
+  const h3=h*smp.uniform(0.65,1),f3=Math.max(1,Math.round(h3/cfg.floor_height));
+  const {wall:wl,window:wln}=bodyMesh(ww,h,d,floors,cfg,smp);
+  const {wall:wr,window:wrn}=bodyMesh(ww,h,d,floors,cfg,smp);
+  const {wall:wb,window:wbn}=bodyMesh(w-2*ww,h3,bd,f3,cfg,smp);
+  return {wall:mergeMeshes([place(wl,lot.cx-w/2+ww/2,0,lot.cz),place(wr,lot.cx+w/2-ww/2,0,lot.cz),place(wb,lot.cx,0,lot.cz+d/2-bd/2)]),window:mergeMeshes([place(wln,lot.cx-w/2+ww/2,0,lot.cz),place(wrn,lot.cx+w/2-ww/2,0,lot.cz),place(wbn,lot.cx,0,lot.cz+d/2-bd/2)]),roof:emptyMesh()};
 }
 
 function styleChamfered(lot,cfg,smp) {
@@ -750,7 +765,19 @@ function generateCity(config) {
     for (let i=0;i<mesh.verts.length;i++){verts[i*3]=mesh.verts[i][0]*sc;verts[i*3+1]=mesh.verts[i][1]*sc;verts[i*3+2]=mesh.verts[i][2]*sc;}
     const faces=new Uint32Array(mesh.faces.length*3);
     for (let i=0;i<mesh.faces.length;i++){faces[i*3]=mesh.faces[i][0];faces[i*3+1]=mesh.faces[i][1];faces[i*3+2]=mesh.faces[i][2];}
-    out.push({name,verts,faces});
+    if (mesh.uvs && mesh.uvs.length) {
+      const uvs=new Float32Array(mesh.uvs.length*2);
+      for (let i=0;i<mesh.uvs.length;i++){uvs[i*2]=mesh.uvs[i][0];uvs[i*2+1]=mesh.uvs[i][1];}
+      if (mesh.subUVs && mesh.subUVs.length) {
+        const subUVs=new Float32Array(mesh.subUVs.length*2);
+        for (let i=0;i<mesh.subUVs.length;i++){subUVs[i*2]=mesh.subUVs[i][0];subUVs[i*2+1]=mesh.subUVs[i][1];}
+        out.push({name,verts,faces,uvs,subUVs});
+      } else {
+        out.push({name,verts,faces,uvs});
+      }
+    } else {
+      out.push({name,verts,faces});
+    }
   }
   const torusMajorSc = surface === 'torus' ? (cfg.torus_major || cfg.city_width*1.5)*sc : 0;
   return {objects:out, surface, traffic:{street_width:cfg.street_width*sc, surface, torus_major_sc:torusMajorSc, segments:trafficSegs}};
@@ -824,7 +851,7 @@ function torusMesh(major, minor, uRes=80, vRes=40) {
 self.onmessage=e=>{
   try {
     const result=generateCity(e.data);
-    self.postMessage({ok:true,...result},result.objects.flatMap(o=>[o.verts.buffer,o.faces.buffer]));
+    self.postMessage({ok:true,...result},result.objects.flatMap(o=>{const t=[o.verts.buffer,o.faces.buffer];if(o.uvs)t.push(o.uvs.buffer);if(o.subUVs)t.push(o.subUVs.buffer);return t;}));
   } catch(err) {
     self.postMessage({ok:false,error:err.message+'\n'+err.stack});
   }
