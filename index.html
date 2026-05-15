@@ -2391,12 +2391,23 @@ function _spawnUfoEvent() {
   const departY = targetY + depTY*offDist + ny*hoverH*3.0;
   const departZ = targetZ + depTZ*offDist + nz*hoverH*3.0;
 
-  // Initialise UFO at start position with correct surface orientation
+  // Pick random planet mesh references for origin/destination
+  const _pickPlanetMesh = () => _solarPlanets.length
+    ? _solarPlanets[Math.floor(Math.random() * _solarPlanets.length)].mesh
+    : null;
+  const fromPlanetMesh = _pickPlanetMesh();
+  const toPlanetMesh   = _pickPlanetMesh();
+  const fromPlanet = fromPlanetMesh ? currentObj.worldToLocal(fromPlanetMesh.position.clone()) : null;
+
+  // Initialise UFO at planet origin (or start) with correct surface orientation
+  const initX = fromPlanet ? fromPlanet.x : startX;
+  const initY = fromPlanet ? fromPlanet.y : startY;
+  const initZ = fromPlanet ? fromPlanet.z : startZ;
   const ela = ufoGrp.matrix.elements;
   ela[0]=rx; ela[1]=ry; ela[2]=rz; ela[3]=0;
   ela[4]=nx; ela[5]=ny; ela[6]=nz; ela[7]=0;
   ela[8]=fwx;ela[9]=fwy;ela[10]=fwz;ela[11]=0;
-  ela[12]=startX;ela[13]=startY;ela[14]=startZ;ela[15]=1;
+  ela[12]=initX;ela[13]=initY;ela[14]=initZ;ela[15]=1;
   currentObj.add(ufoGrp);
 
   // Tractor beam particles
@@ -2409,7 +2420,7 @@ function _spawnUfoEvent() {
   currentObj.add(beamPts);
 
   _ufo = {
-    state: 'incoming',
+    state: fromPlanet ? 'from_planet' : 'incoming',
     carMesh, cx: carX, cy: carY, cz: carZ,
     ufoGrp, beamPts, beamLight, lightMats, nLights,
     nx, ny, nz, rx, ry, rz, fwx, fwy, fwz,
@@ -2417,6 +2428,12 @@ function _spawnUfoEvent() {
     startX, startY, startZ, hoverH, sw, ufoR,
     timer: 0, spinAngle: 0,
     incomingDur: 10.5, hoverDur: 3.6, liftDur: 9.6, absorbDur: 1.8, departDur: 7.5,
+    fromPlanetX: fromPlanet ? fromPlanet.x : startX,
+    fromPlanetY: fromPlanet ? fromPlanet.y : startY,
+    fromPlanetZ: fromPlanet ? fromPlanet.z : startZ,
+    fromPlanetDur: 13.0,
+    toPlanetMesh,
+    toPlanetDur: 13.0,
     departX, departY, departZ,
     lightTimer: 0, lightIdx: 0,
     departFromX: 0, departFromY: 0, departFromZ: 0,
@@ -2457,7 +2474,15 @@ function _tickUfo(dt) {
   // Compute UFO world position for this frame
   let px, py, pz;
 
-  if (u.state === 'incoming') {
+  if (u.state === 'from_planet') {
+    const prog = Math.min(1, u.timer / u.fromPlanetDur);
+    const ease = prog * prog * (3 - 2 * prog);
+    px = u.fromPlanetX + (u.startX - u.fromPlanetX) * ease;
+    py = u.fromPlanetY + (u.startY - u.fromPlanetY) * ease;
+    pz = u.fromPlanetZ + (u.startZ - u.fromPlanetZ) * ease;
+    if (prog >= 1) { u.state = 'incoming'; u.timer = 0; }
+
+  } else if (u.state === 'incoming') {
     const prog = Math.min(1, u.timer / u.incomingDur);
     const ease = prog < 0.5 ? 2*prog*prog : -1 + (4 - 2*prog)*prog;
     px = u.startX + (u.targetX - u.startX) * ease;
@@ -2496,12 +2521,27 @@ function _tickUfo(dt) {
       u.state = 'departing'; u.timer = 0;
     }
 
-  } else { // departing
+  } else if (u.state === 'departing') {
     const prog = Math.min(1, u.timer / u.departDur);
     const ease = prog * prog;
     px = u.departFromX + (u.departX - u.departFromX) * ease;
     py = u.departFromY + (u.departY - u.departFromY) * ease;
     pz = u.departFromZ + (u.departZ - u.departFromZ) * ease;
+    u.spinAngle += dt * prog * 1.33;
+    if (prog >= 1) { u.state = 'to_planet'; u.timer = 0; }
+
+  } else { // to_planet
+    const prog = Math.min(1, u.timer / u.toPlanetDur);
+    const ease = prog * prog;
+    if (u.toPlanetMesh) {
+      const tp = currentObj.worldToLocal(u.toPlanetMesh.position.clone());
+      u._tpx = tp.x; u._tpy = tp.y; u._tpz = tp.z;
+    } else {
+      u._tpx = u.departX; u._tpy = u.departY; u._tpz = u.departZ;
+    }
+    px = u.departX + (u._tpx - u.departX) * ease;
+    py = u.departY + (u._tpy - u.departY) * ease;
+    pz = u.departZ + (u._tpz - u.departZ) * ease;
     u.spinAngle += dt * prog * 1.33;
     if (prog >= 1) { _removeUfo(); return; }
   }
