@@ -2149,9 +2149,10 @@ function _spawnBirds() {
     const ha = Math.random() * Math.PI * 2;
     const su = (Math.random() - 0.5) * halfW * 1.4;
     const sv = (Math.random() - 0.5) * halfD * 1.4;
+    const yJitter = surfType === 'flat' ? Math.random() * flightH * 0.2 : 0;
     centers.push({
       x: blobX + blobTX*su + blobFX*sv,
-      y: blobY + blobTY*su + blobFY*sv,
+      y: blobY + blobTY*su + blobFY*sv + yJitter,
       z: blobZ + blobTZ*su + blobFZ*sv,
       hx: Math.cos(ha), hy: 0, hz: Math.sin(ha),
       neighbors: [],
@@ -3249,6 +3250,7 @@ document.getElementById('btn-generate').addEventListener('click', () => {
     trafficData = null; adjacency = {};
     buildAdjacency(traffic); trafficData = traffic;
     if (carsEnabled) spawnCars();
+    if (_birds) { _despawnBirds(); _spawnBirds(); document.getElementById('btn-birds').classList.add('active'); }
     status.textContent = `Generated — ${objects.length} objects`;
 
     // Build OBJ for download
