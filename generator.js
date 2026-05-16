@@ -434,9 +434,10 @@ function smallBuildingWindows(w, h, d, smp) {
 
 function bodyMesh(w,h,d,floors,cfg,smp) {
   const aspect=Math.max(w,d)/Math.max(Math.min(w,d),0.1);
-  if (aspect<1.4&&floors>=5&&Math.min(w,d)>=8&&smp.random()<0.20) { const sides=smp.choice([6,8]),r=Math.min(w,d)/2; const {wall,window}=windowedPrism(sides,r,h,floors); return {wall,window,isprism:true}; }
-  if (floors>=cfg.window_min_floors) { const {wall,window}=windowedBox(w,h,d,floors,cfg.window_depth); return {wall,window,isprism:false}; }
-  return {wall:box(w,h,d), window:smallBuildingWindows(w,h,d,smp), isprism:false};
+  const hasWin=floors>=cfg.window_min_floors;
+  if (aspect<1.4&&floors>=5&&Math.min(w,d)>=8&&smp.random()<0.20) { const sides=smp.choice([6,8]),r=Math.min(w,d)/2; if (hasWin) { const {wall,window}=windowedPrism(sides,r,h,floors); return {wall,window,isprism:true}; } return {wall:prism(sides,r,h),window:emptyMesh(),isprism:true}; }
+  if (hasWin) { const {wall,window}=windowedBox(w,h,d,floors,cfg.window_depth); return {wall,window,isprism:false}; }
+  return {wall:box(w,h,d), window:cfg.windows_enabled?smallBuildingWindows(w,h,d,smp):emptyMesh(), isprism:false};
 }
 
 function rooftopClutter(w,d,cx,y,cz,smp) {
@@ -721,7 +722,7 @@ function generateCity(config) {
     floor_height:3,min_floors:1,max_floors:18,downtown_boost:2.5,max_aspect_ratio:4,
     roof_pyramid_chance:0.25,roof_pyramid_height:3,add_base:true,base_thickness:2,base_margin:5,
     voronoi_boulevards:false,voronoi_sites:8,diagonal_road:false,road_height:0.5,
-    window_min_floors:4,window_depth:0.5,setback_min_floors:10,num_highways:1,
+    windows_enabled:true,window_min_floors:4,window_depth:0.5,setback_min_floors:10,num_highways:1,
     highway_elevation:10,highway_carriage_width:6,highway_median_width:3,
     highway_deck_thickness:1.5,highway_pillar_spacing:30,highway_pillar_size:2.5,
     ...config
