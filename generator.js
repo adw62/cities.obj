@@ -59,15 +59,14 @@ class Sampler {
 function emptyMesh() { return { verts: [], faces: [] }; }
 
 function transformMesh(mesh, pos = [0,0,0], rotY = 0) {
-  let verts = mesh.verts.map(([x, y, z]) => {
-    if (rotY) {
-      const c = Math.cos(rotY), s = Math.sin(rotY);
-      return [x*c - z*s, y, x*s + z*c];
-    }
-    return [x, y, z];
-  });
-  verts = verts.map(([x, y, z]) => [x + pos[0], y + pos[1], z + pos[2]]);
-  return { verts, faces: mesh.faces.map(f => [f[0], f[1], f[2]]), ...(mesh.uvs ? {uvs: mesh.uvs} : {}), ...(mesh.subUVs ? {subUVs: mesh.subUVs} : {}) };
+  const [px, py, pz] = pos;
+  const c = rotY ? Math.cos(rotY) : 1, s = rotY ? Math.sin(rotY) : 0;
+  const verts = mesh.verts.map(([x, y, z]) => [x*c - z*s + px, y + py, x*s + z*c + pz]);
+  const faces = mesh.faces.map(f => [f[0], f[1], f[2]]);
+  const out = { verts, faces };
+  if (mesh.uvs) out.uvs = mesh.uvs;
+  if (mesh.subUVs) out.subUVs = mesh.subUVs;
+  return out;
 }
 
 function mergeMeshes(meshes) {
@@ -83,11 +82,13 @@ function mergeMeshes(meshes) {
     else if (hasSubUVs) { for (let i = 0; i < m.verts.length; i++) subUVs.push([0, 0]); }
     off += m.verts.length;
   }
-  return { verts, faces, ...(hasUVs ? {uvs} : {}), ...(hasSubUVs ? {subUVs} : {}) };
+  const out = { verts, faces };
+  if (hasUVs) out.uvs = uvs;
+  if (hasSubUVs) out.subUVs = subUVs;
+  return out;
 }
 
 function place(mesh, cx, y, cz) { return transformMesh(mesh, [cx, y, cz]); }
-function stacked(parts) { return mergeMeshes(parts); }
 
 // ── Geometry primitives ───────────────────────────────────────────────────────
 function box(w, h, d) {
@@ -459,7 +460,7 @@ function rooftopClutter(w,d,cx,y,cz,smp) {
       parts.push(place(box(ow,oh,od),cx+smp.uniform(-Math.max(0,w/2-mg-ow/2),Math.max(0,w/2-mg-ow/2)),y,cz+smp.uniform(-Math.max(0,d/2-mg-od/2),Math.max(0,d/2-mg-od/2))));
     }
   }
-  return stacked(parts);
+  return mergeMeshes(parts);
 }
 
 function roofMesh(w,d,cx,y,cz,cfg,smp,allowPyramid=true) {
@@ -477,7 +478,7 @@ function roofMesh(w,d,cx,y,cz,cfg,smp,allowPyramid=true) {
     parts.push(place(prism(4,sr,sh),cx,y,cz));
     if (y>45&&smp.random()<0.20) _beacons.push(place(box(1.5,1.5,1.5),cx,y+sh-0.75,cz));
   }
-  return stacked(parts);
+  return mergeMeshes(parts);
 }
 
 // ── Building styles ───────────────────────────────────────────────────────────
@@ -942,7 +943,8 @@ function torusMesh(major, minor, uRes=80, vRes=40) {
   const verts=[], faces=[];
   for (let i=0;i<uRes;i++) for (let j=0;j<vRes;j++) {
     const phi=i*2*Math.PI/uRes, theta=j*2*Math.PI/vRes;
-    verts.push([(major+minor*Math.cos(theta))*Math.cos(phi), minor*Math.sin(theta), (major+minor*Math.cos(theta))*Math.sin(phi)]);
+    const rr = major + minor*Math.cos(theta);
+    verts.push([rr*Math.cos(phi), minor*Math.sin(theta), rr*Math.sin(phi)]);
   }
   for (let i=0;i<uRes;i++) for (let j=0;j<vRes;j++) {
     const a=i*vRes+j, b=i*vRes+(j+1)%vRes, c=((i+1)%uRes)*vRes+j, d=((i+1)%uRes)*vRes+(j+1)%vRes;

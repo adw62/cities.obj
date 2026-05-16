@@ -457,7 +457,6 @@ scene.add(_sunSphere);
   scene.add(new THREE.Points(geo, window._starMat));
 }
 
-// ── Volumetric clouds ─────────────────────────────────────
 // ── Gaussian splat clouds ─────────────────────────────────
 function _makeGaussTex(sigma = 0.42) {
   const S = 128, h = S / 2;
@@ -479,9 +478,8 @@ function _makeGaussTex(sigma = 0.42) {
 }
 
 function _cloudGraph(n) {
-  const SC = 1;
   const nodes = Array.from({ length: n }, () => new THREE.Vector3(
-    (Math.random()-0.5)*100*SC, (Math.random()-0.5)*30*SC, (Math.random()-0.5)*70*SC
+    (Math.random()-0.5)*100, (Math.random()-0.5)*30, (Math.random()-0.5)*70
   ));
   const edges = [], inTree = new Set([0]);
   while (inTree.size < n) {
@@ -503,7 +501,6 @@ function _cloudGraph(n) {
 }
 
 function _layoutGraph(nodes, edges) {
-  const SC = 1;
   const n = nodes.length, vel = nodes.map(()=>new THREE.Vector3()), f = nodes.map(()=>new THREE.Vector3()), tmp = new THREE.Vector3();
   for (let iter = 0; iter < 200; iter++) {
     for (const fi of f) fi.set(0,0,0);
@@ -514,7 +511,7 @@ function _layoutGraph(nodes, edges) {
     }
     for (const [a,b] of edges) {
       tmp.subVectors(nodes[b], nodes[a]);
-      const mag = 0.09 * (tmp.length() - 55*SC);
+      const mag = 0.09 * (tmp.length() - 55);
       tmp.normalize().multiplyScalar(mag); f[a].add(tmp); f[b].sub(tmp);
     }
     for (let i = 0; i < n; i++) { vel[i].addScaledVector(f[i], 0.1).multiplyScalar(0.87); nodes[i].add(vel[i]); }
@@ -622,7 +619,7 @@ function _spawnClouds() {
     const cx = (Math.random()-0.5)*1400, cz = (Math.random()-0.5)*1400;
     const cy = 130 + Math.random()*50;
     const { splats, dbg } = _buildCloud(cx, cy, cz);
-    _clouds.push({ splats, dbg, driftX:(Math.random()-0.5)*1.5, driftZ:(Math.random()-0.5)*1.5 });
+    _clouds.push({ splats, dbg });
   }
 }
 _spawnClouds();
@@ -1023,21 +1020,20 @@ function _tickSolar(dt) {
     );
     for (const m of (p.moons || [])) {
       if (!dayNightPaused) m.angle += m.speed * dt;
-      const ma = m.angle + _yearAngle;
+      const ma = m.angle + _yearAngle, mca = Math.cos(ma), msa = Math.sin(ma);
       m.mesh.position.set(
-        p.mesh.position.x + Math.cos(ma) * m.orbitR,
-        p.mesh.position.y + Math.sin(ma) * m.orbitR * m.tilt,
-        p.mesh.position.z + Math.sin(ma) * m.orbitR
+        p.mesh.position.x + mca * m.orbitR,
+        p.mesh.position.y + msa * m.orbitR * m.tilt,
+        p.mesh.position.z + msa * m.orbitR
       );
     }
     if (p.doomedMoon) {
       const dm = p.doomedMoon;
       if (!dayNightPaused) dm.angle += dm.speed * dt;
-      const dma = dm.angle + _yearAngle;
-      // Moon's position relative to gas giant (in orbital plane)
-      const moonRelX = Math.cos(dma) * dm.orbitR;
-      const moonRelY = Math.sin(dma) * dm.orbitR * dm.tilt;
-      const moonRelZ = Math.sin(dma) * dm.orbitR;
+      const dma = dm.angle + _yearAngle, dca = Math.cos(dma), dsa = Math.sin(dma);
+      const moonRelX = dca * dm.orbitR;
+      const moonRelY = dsa * dm.orbitR * dm.tilt;
+      const moonRelZ = dsa * dm.orbitR;
       dm.mesh.position.set(
         p.mesh.position.x + moonRelX,
         p.mesh.position.y + moonRelY,
@@ -1171,7 +1167,6 @@ let windowColor  = new THREE.Color(0x2f6aaa);
 let wallColor    = new THREE.Color(0x4488cc);
 let _windowMat   = null;
 let _beaconMat   = null;
-let _wallGlowMat = null;
 const _roomTex   = new THREE.TextureLoader().load('mega_texture.png');
 
 function colorKey(name) {
@@ -1269,7 +1264,6 @@ function buildAdjacency(data) {
     const ek = ptKey(se[0], se[1], se[2], tol);
     seg._sk = sk; seg._ek = ek;
     seg._len = Math.hypot(se[0]-ss[0], se[1]-ss[1], se[2]-ss[2]);
-    const sw = data.street_width, len = seg._len || 1e-6;
     if (!adjacency[sk]) adjacency[sk] = [];
     if (!adjacency[ek]) adjacency[ek] = [];
     adjacency[sk].push({ segIdx: i, dir: 1 });
@@ -1674,10 +1668,7 @@ function _removeFire() {
 }
 
 function _tickFire(dt) {
-  if(!_fire){
-    if(!trafficData||!currentObj) return;
-    return;
-  }
+  if(!_fire) return;
   const f=_fire;
   const sw=trafficData.street_width;
 
@@ -1941,10 +1932,7 @@ function _removeTornado() {
 }
 
 function _tickTornado(dt) {
-  if (!_tornado) {
-    if (!trafficData || !currentObj || !carInstancedMesh) return;
-    return;
-  }
+  if (!_tornado) return;
   const tor = _tornado;
   const sw = tor.sw;
   tor.timer += dt;
@@ -2080,6 +2068,14 @@ let _ufo = null;
 // ── Boid bird flock ───────────────────────────────────────────────────────────
 let _birds = null;
 
+function _randTarget(b, p) {
+  const { _wanderX, _wanderZ, _wanderY, _wStep, flightH } = b;
+  b[p+'x'] = Math.max(-_wanderX, Math.min(_wanderX, b[p+'x'] + (Math.random()-0.5)*2*_wStep));
+  b[p+'y'] = Math.max(flightH, flightH + (Math.random()-0.3)*_wanderY);
+  b[p+'z'] = Math.max(-_wanderZ, Math.min(_wanderZ, b[p+'z'] + (Math.random()-0.5)*2*_wStep));
+  b[p+'Timer'] = 16 + Math.random() * 10;
+}
+
 function _spawnBirds() {
   if (!trafficData) return;
   const sw = trafficData.street_width;
@@ -2103,24 +2099,6 @@ function _spawnBirds() {
   const _wanderX = halfW * 4;   // ± X range for both targets
   const _wanderY = flightH * 2; // Y jitter around flightH
   const _wanderZ = halfD * 4;    // ± Z range for both targets
-  function _randTargetA(b) {
-    b.wax = Math.max(-_wanderX, Math.min(_wanderX, b.wax + (Math.random()-0.5)*2*_wStep));
-    b.way = Math.max(flightH, flightH + (Math.random()-0.3)*_wanderY);
-    b.waz = Math.max(-_wanderZ, Math.min(_wanderZ, b.waz + (Math.random()-0.5)*2*_wStep));
-    b.waTimer = 16 + Math.random() * 10;
-  }
-  function _randTargetB(b) {
-    b.wbx = Math.max(-_wanderX, Math.min(_wanderX, b.wbx + (Math.random()-0.5)*2*_wStep));
-    b.wby = Math.max(flightH, flightH + (Math.random()-0.3)*_wanderY);
-    b.wbz = Math.max(-_wanderZ, Math.min(_wanderZ, b.wbz + (Math.random()-0.5)*2*_wStep));
-    b.wbTimer = 16 + Math.random() * 10;
-  }
-  function _randTargetC(b) {
-    b.wcx = Math.max(-_wanderX, Math.min(_wanderX, b.wcx + (Math.random()-0.5)*2*_wStep));
-    b.wcy = Math.max(flightH, flightH + (Math.random()-0.3)*_wanderY);
-    b.wcz = Math.max(-_wanderZ, Math.min(_wanderZ, b.wcz + (Math.random()-0.5)*2*_wStep));
-    b.wcTimer = 16 + Math.random() * 10;
-  }
 
   const centers = [];
   for (let i = 0; i < NC; i++) {
@@ -2164,12 +2142,10 @@ function _spawnBirds() {
              wbx: 0, wby: 0, wbz: 0, wbTimer: 0,
              wcx: 0, wcy: 0, wcz: 0, wcTimer: 0,
              NC, NB, sw, halfW, halfD, flightH, spd, SEP_R, NEIGHBOR_R, spread,
-             _randTargetA, _randTargetB, _randTargetC, neighborTimer: 0 };
-  _randTargetA(_birds);
-  _randTargetB(_birds);
-  _birds.wbTimer += 2 + Math.random() * 3;
-  _randTargetC(_birds);
-  _birds.wcTimer += 4 + Math.random() * 3;
+             _wStep, _wanderX, _wanderY, _wanderZ, neighborTimer: 0 };
+  _randTarget(_birds, 'wa');
+  _randTarget(_birds, 'wb'); _birds.wbTimer += 2 + Math.random() * 3;
+  _randTarget(_birds, 'wc'); _birds.wcTimer += 4 + Math.random() * 3;
 }
 
 function _tickBirds(dt) {
@@ -2179,9 +2155,9 @@ function _tickBirds(dt) {
   const TURN = dt * 2.2;
 
   // ── Refresh shared wander targets ────────────────────────────────────────
-  b.waTimer -= dt; if (b.waTimer <= 0) b._randTargetA(b);
-  b.wbTimer -= dt; if (b.wbTimer <= 0) b._randTargetB(b);
-  b.wcTimer -= dt; if (b.wcTimer <= 0) b._randTargetC(b);
+  b.waTimer -= dt; if (b.waTimer <= 0) _randTarget(b, 'wa');
+  b.wbTimer -= dt; if (b.wbTimer <= 0) _randTarget(b, 'wb');
+  b.wcTimer -= dt; if (b.wcTimer <= 0) _randTarget(b, 'wc');
 
   // ── Rebuild neighbour lists periodically via spatial grid (XZ) ────────────
   b.neighborTimer -= dt;
@@ -2707,12 +2683,6 @@ renderer.setAnimationLoop(() => {
         : 0;
     }
     if (_beaconMat) _beaconMat.uniforms.uTime.value += dt;
-    if (_wallGlowMat) {
-      _wallGlowMat.uniforms.uTime.value  += dt;
-      _wallGlowMat.uniforms.uNight.value  = sunEnabled
-        ? Math.max(0, Math.min(1, (0.12 - sunY) / 0.35))
-        : 0;
-    }
     sun.position.set(Math.cos(flyT) * 400, sunY * 400, 0);
     window._starMat.opacity = sunEnabled ? Math.max(0, Math.min(1, (-sunY - 0.2) / 0.4)) : 0;
     {
@@ -2723,10 +2693,8 @@ renderer.setAnimationLoop(() => {
       const cb = sunEnabled ? Math.max(0.3, 0.38+_dayT*0.62-_sset*0.45) : 0.42;
       for (const c of _clouds) {
         for (const { sprite, mat, bright, blueShft } of c.splats) {
-          if (!dayNightPaused) { sprite.position.x += c.driftX*dt; sprite.position.z += c.driftZ*dt; }
           mat.color.setRGB(Math.min(1,bright*cr), Math.min(1,bright*cg), Math.min(1,(bright+blueShft)*cb));
         }
-        if (!dayNightPaused && c.dbg) { c.dbg.position.x += c.driftX*dt; c.dbg.position.z += c.driftZ*dt; }
       }
     }
 
@@ -2767,31 +2735,9 @@ renderer.setAnimationLoop(() => {
 // ── UI events ─────────────────────────────────────────────
 
 
-document.getElementById('color-base').addEventListener('input', e => {
-  baseColor.set(e.target.value);
-  updateColors();
-});
-
-
-document.getElementById('color-road').addEventListener('input', e => {
-  roadColor.set(e.target.value);
-  updateColors();
-});
-
-document.getElementById('color-wall').addEventListener('input', e => {
-  wallColor.set(e.target.value);
-  updateColors();
-});
-
-document.getElementById('color-window').addEventListener('input', e => {
-  windowColor.set(e.target.value);
-  updateColors();
-});
-
-document.getElementById('color-roof').addEventListener('input', e => {
-  roofColor.set(e.target.value);
-  updateColors();
-});
+for (const [id, col] of [['color-base', baseColor], ['color-road', roadColor], ['color-wall', wallColor], ['color-window', windowColor], ['color-roof', roofColor]]) {
+  document.getElementById(id).addEventListener('input', e => { col.set(e.target.value); updateColors(); });
+}
 
 function applyFog() {
   scene.fog = fogEnabled ? new THREE.FogExp2(0x0a0a12, fogDensity) : null;
@@ -2915,6 +2861,26 @@ window.addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
+// Sync JS state from DOM in case browser restored slider/color positions on refresh
+(function syncSlidersOnLoad() {
+  const g = id => document.getElementById(id);
+  fogDensity = parseFloat(g('fog-density').value);
+  if (fogEnabled) applyFog();
+  rotSpeed = parseFloat(g('speed-slider').value);
+  controls.autoRotateSpeed = rotSpeed * 300;
+  ambient.intensity = parseFloat(g('ambient-slider').value);
+  flyT = parseFloat(g('tod-slider').value) * Math.PI * 2;
+  _yearAngle = parseFloat(g('toy-slider').value) * Math.PI * 2;
+  g('cloud-count-val').textContent  = g('cloud-count').value;
+  g('planet-count-val').textContent = g('planet-count').value;
+  g('car-count-val').textContent    = g('car-count').value;
+  baseColor.set(g('color-base').value);
+  roadColor.set(g('color-road').value);
+  wallColor.set(g('color-wall').value);
+  windowColor.set(g('color-window').value);
+  roofColor.set(g('color-roof').value);
+})();
+
 
 // ── Music ─────────────────────────────────────────────────
 const audio = new Audio();
@@ -2953,7 +2919,6 @@ fetch('music/manifest.json')
   .then(r => r.json())
   .then(files => {
     tracks = files;
-    files.forEach(f => { const a = new Audio(`music/${f}`); a.preload = 'auto'; });
   });
 
 // ── Generator ─────────────────────────────────────────────
@@ -2978,37 +2943,24 @@ genSliders.forEach(([id, valId]) => {
   });
 });
 
-document.getElementById('scene-panel-header').addEventListener('click', () => {
-  const body = document.getElementById('scene-panel-body');
-  const arrow = document.getElementById('scene-toggle-arrow');
-  const collapsed = body.style.display === 'none';
-  body.style.display = collapsed ? 'flex' : 'none';
-  arrow.textContent = collapsed ? '▼' : '▶';
-});
+function collapseAllPanels() {
+  for (const id of ['scene', 'sky', 'events', 'gen']) {
+    document.getElementById(`${id}-panel-body`).style.display = 'none';
+    document.getElementById(`${id}-toggle-arrow`).textContent = '▶';
+  }
+}
 
-document.getElementById('sky-panel-header').addEventListener('click', () => {
-  const body = document.getElementById('sky-panel-body');
-  const arrow = document.getElementById('sky-toggle-arrow');
-  const collapsed = body.style.display === 'none';
-  body.style.display = collapsed ? 'flex' : 'none';
-  arrow.textContent = collapsed ? '▼' : '▶';
-});
+for (const id of ['scene', 'sky', 'events', 'gen']) {
+  document.getElementById(`${id}-panel-header`).addEventListener('click', () => {
+    const body  = document.getElementById(`${id}-panel-body`);
+    const arrow = document.getElementById(`${id}-toggle-arrow`);
+    const collapsed = body.style.display === 'none';
+    body.style.display = collapsed ? 'flex' : 'none';
+    arrow.textContent  = collapsed ? '▼' : '▶';
+  });
+}
 
-document.getElementById('events-panel-header').addEventListener('click', () => {
-  const body = document.getElementById('events-panel-body');
-  const arrow = document.getElementById('events-toggle-arrow');
-  const collapsed = body.style.display === 'none';
-  body.style.display = collapsed ? 'flex' : 'none';
-  arrow.textContent = collapsed ? '▼' : '▶';
-});
-
-document.getElementById('gen-panel-header').addEventListener('click', () => {
-  const body = document.getElementById('gen-panel-body');
-  const arrow = document.getElementById('gen-toggle-arrow');
-  const collapsed = body.style.display === 'none';
-  body.style.display = collapsed ? 'flex' : 'none';
-  arrow.textContent = collapsed ? '▼' : '▶';
-});
+document.getElementById('canvas-container').addEventListener('mousedown', collapseAllPanels);
 
 document.getElementById('gen-voronoi').addEventListener('change', e => {
   document.getElementById('gen-vsites-row').style.display = e.target.checked ? 'block' : 'none';
@@ -3239,13 +3191,13 @@ document.getElementById('btn-generate').addEventListener('click', () => {
     const size3 = box3.getSize(new THREE.Vector3());
     const center3 = box3.getCenter(new THREE.Vector3());
     autoScale = 80 / Math.max(size3.x, size3.y, size3.z);
-    if (_wallGlowMat) _wallGlowMat.uniforms.uScale.value = autoScale;
     modelCenter.copy(center3);
     group.scale.setScalar(autoScale);
     group.position.copy(center3).multiplyScalar(-autoScale);
 
     scene.add(group);
     currentObj = group;
+    updateColors();
     applyWireframe();
     trafficData = null; adjacency = {};
     buildAdjacency(traffic); trafficData = traffic;
