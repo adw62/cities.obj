@@ -837,7 +837,10 @@ function generateCity(config) {
       if (name === 'base_plate') {
         if (baseMesh) warped.push(['base_plate', baseMesh]);
       } else {
-        warped.push([name, { verts: warpFn(mesh.verts), faces: mesh.faces }]);
+        const wm = { verts: warpFn(mesh.verts), faces: mesh.faces };
+        if (mesh.uvs)    wm.uvs    = mesh.uvs;
+        if (mesh.subUVs) wm.subUVs = mesh.subUVs;
+        warped.push([name, wm]);
       }
     }
     objects.length = 0; objects.push(...warped);

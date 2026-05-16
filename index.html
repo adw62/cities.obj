@@ -2069,16 +2069,31 @@ let _ufo = null;
 let _birds = null;
 
 function _randTarget(b, p) {
-  const { _wanderX, _wanderZ, _wanderY, _wStep, flightH } = b;
-  b[p+'x'] = Math.max(-_wanderX, Math.min(_wanderX, b[p+'x'] + (Math.random()-0.5)*2*_wStep));
-  b[p+'y'] = Math.max(flightH, flightH + (Math.random()-0.3)*_wanderY);
-  b[p+'z'] = Math.max(-_wanderZ, Math.min(_wanderZ, b[p+'z'] + (Math.random()-0.5)*2*_wStep));
+  if (b.surfType !== 'flat') {
+    // Pick a random road segment, project it above the curved surface
+    const segs = trafficData.segments;
+    const seg  = segs[Math.floor(Math.random() * segs.length)];
+    const mx = (seg.start[0] + seg.end[0]) * 0.5 * autoScale;
+    const my = (seg.start[1] + seg.end[1]) * 0.5 * autoScale;
+    const mz = (seg.start[2] + seg.end[2]) * 0.5 * autoScale;
+    const [nx, ny, nz] = _torSurfNormal(mx, my, mz);
+    const lift = b.flightH * 2.5 + (Math.random() - 0.3) * b.flightH;
+    b[p+'x'] = mx + nx * lift;
+    b[p+'y'] = my + ny * lift;
+    b[p+'z'] = mz + nz * lift;
+  } else {
+    const { _wanderX, _wanderZ, _wanderY, _wStep, flightH } = b;
+    b[p+'x'] = Math.max(-_wanderX, Math.min(_wanderX, b[p+'x'] + (Math.random()-0.5)*2*_wStep));
+    b[p+'y'] = Math.max(flightH, flightH + (Math.random()-0.3)*_wanderY);
+    b[p+'z'] = Math.max(-_wanderZ, Math.min(_wanderZ, b[p+'z'] + (Math.random()-0.5)*2*_wStep));
+  }
   b[p+'Timer'] = 16 + Math.random() * 10;
 }
 
 function _spawnBirds() {
   if (!trafficData) return;
   const sw = trafficData.street_width;
+  const surfType = trafficData.surface || 'flat';
 
   let maxX = 0, maxZ = 0;
   for (const seg of trafficData.segments) {
@@ -2100,13 +2115,44 @@ function _spawnBirds() {
   const _wanderY = flightH * 2; // Y jitter around flightH
   const _wanderZ = halfD * 4;    // ± Z range for both targets
 
+  // For curved surfaces, find the city centroid and spawn the blob above it
+  let blobX = 0, blobY = flightH, blobZ = 0;
+  let blobTX = 1, blobTY = 0, blobTZ = 0; // tangent right
+  let blobFX = 0, blobFY = 0, blobFZ = 1; // tangent forward
+  if (surfType !== 'flat') {
+    let sx = 0, sy = 0, sz = 0, cnt = 0, maxR = 0;
+    for (const seg of trafficData.segments) {
+      sx += seg.start[0] + seg.end[0];
+      sy += seg.start[1] + seg.end[1];
+      sz += seg.start[2] + seg.end[2];
+      cnt += 2;
+      const r0 = Math.sqrt(seg.start[0]**2 + seg.start[1]**2 + seg.start[2]**2);
+      const r1 = Math.sqrt(seg.end[0]**2   + seg.end[1]**2   + seg.end[2]**2);
+      if (r0 > maxR) maxR = r0;
+      if (r1 > maxR) maxR = r1;
+    }
+    sx /= cnt; sy /= cnt; sz /= cnt;
+    // The raw centroid falls inside the surface — project its direction out to maxR
+    const cl = Math.sqrt(sx*sx + sy*sy + sz*sz) || 1;
+    const scx = (sx/cl) * maxR * autoScale;
+    const scy = (sy/cl) * maxR * autoScale;
+    const scz = (sz/cl) * maxR * autoScale;
+    const [nx, ny, nz] = _torSurfNormal(scx, scy, scz);
+    blobX = scx + nx * flightH * 2.5;
+    blobY = scy + ny * flightH * 2.5;
+    blobZ = scz + nz * flightH * 2.5;
+    [blobTX, blobTY, blobTZ, blobFX, blobFY, blobFZ] = _torTangentFrame(nx, ny, nz);
+  }
+
   const centers = [];
   for (let i = 0; i < NC; i++) {
     const ha = Math.random() * Math.PI * 2;
+    const su = (Math.random() - 0.5) * halfW * 1.4;
+    const sv = (Math.random() - 0.5) * halfD * 1.4;
     centers.push({
-      x: (Math.random() - 0.5) * halfW * 1.4,
-      y: flightH + Math.random() * flightH * 0.2,
-      z: (Math.random() - 0.5) * halfD * 1.4,
+      x: blobX + blobTX*su + blobFX*sv,
+      y: blobY + blobTY*su + blobFY*sv,
+      z: blobZ + blobTZ*su + blobFZ*sv,
       hx: Math.cos(ha), hy: 0, hz: Math.sin(ha),
       neighbors: [],
     });
@@ -2142,7 +2188,8 @@ function _spawnBirds() {
              wbx: 0, wby: 0, wbz: 0, wbTimer: 0,
              wcx: 0, wcy: 0, wcz: 0, wcTimer: 0,
              NC, NB, sw, halfW, halfD, flightH, spd, SEP_R, NEIGHBOR_R, spread,
-             _wStep, _wanderX, _wanderY, _wanderZ, neighborTimer: 0 };
+             _wStep, _wanderX, _wanderY, _wanderZ, neighborTimer: 0,
+             surfType };
   _randTarget(_birds, 'wa');
   _randTarget(_birds, 'wb'); _birds.wbTimer += 2 + Math.random() * 3;
   _randTarget(_birds, 'wc'); _birds.wcTimer += 4 + Math.random() * 3;
